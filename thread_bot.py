@@ -46,7 +46,7 @@ class IntelThread:
             {"name": "CERT-EU", "url": "https://www.cert.europa.eu/publications/security-advisories/rss", "type": "feed"},
             
             # VENDOR & PLUGIN
-            {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"},
+            {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"}, # Nessus
             {"name": "MSRC (Microsoft)", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
             {"name": "Fortinet", "url": "https://filestore.fortinet.com/fortiguard/rss/ir.xml", "type": "feed"},
@@ -73,21 +73,22 @@ class IntelThread:
         self.last_flush_time = datetime.now()
         self.last_heartbeat_date = None
 
-    # --- 3. GEMINI AI ANALİZ MOTORU ---
+    # --- 3. GEMINI AI ANALİZ MOTORU (AKSIYON ODAKLI) ---
     async def ask_gemini(self, title, description):
         if not self.model:
             return self.translate_text(f"{title}\n{description}")
 
         try:
+            # Prompt: Hikaye değil, aksiyon istiyoruz.
             prompt = (
-                f"Sen kıdemli bir siber güvenlik uzmanısın. Aşağıdaki zafiyet verisini analiz et.\n"
+                f"Sen kıdemli bir siber güvenlik operasyon uzmanısın. Aşağıdaki veriyi analiz et.\n"
                 f"Başlık: {title}\n"
                 f"Açıklama: {description}\n\n"
-                f"Lütfen çıktıyı Türkçe olarak şu formatta hazırla (Markdown kullanma, sadece metin ve emoji):\n"
-                f"1. Zafiyet Özeti (1 cümle)\n"
-                f"2. Etki Analizi (Saldırgan ne yapabilir?)\n"
-                f"3. Çözüm Önerisi (Remediation)\n\n"
-                f"Yanıtın teknik personel için net olsun."
+                f"Lütfen çıktıyı Türkçe olarak, Markdown formatında ama kod bloğu olmadan hazırla:\n"
+                f"1. **Özet:** Zafiyet nedir? (Tek cümle)\n"
+                f"2. **Etki:** Saldırgan ne elde eder?\n"
+                f"3. **Aksiyon:** Hangi sürüme güncellenmeli veya hangi ayar kapatılmalı? (Net sürüm/komut ver, tavsiye verme emir ver.)\n\n"
+                f"Yanıtın kısa, teknik ve yönetici özeti tadında olsun."
             )
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, self.model.generate_content, prompt)
@@ -117,7 +118,7 @@ class IntelThread:
         cmd = command.lower().strip()
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            ai_status = "✅ Gemini (Akıllı Mod)" if self.model else "⚠️ Pasif"
+            ai_status = "✅ Gemini (Tiered Mode)" if self.model else "⚠️ Pasif"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n"
                 f"🧠 AI: {ai_status}\n"
@@ -135,7 +136,7 @@ class IntelThread:
             else:
                 await self.send_telegram_card(f"⚠️ <b>{dosya}</b> bulunamadı.")
         elif cmd == "/tara":
-            await self.send_telegram_card("🚀 Tarama başlatılıyor...")
+            await self.send_telegram_card("🚀 Manuel tarama başlatılıyor...")
 
     async def send_telegram_file(self, filepath):
         url = f"https://api.telegram.org/bot{self.tg_token}/sendDocument"
@@ -144,7 +145,7 @@ class IntelThread:
         data.add_field('document', open(filepath, 'rb'), filename=os.path.basename(filepath))
         async with aiohttp.ClientSession() as session:
             try: await session.post(url, data=data)
-            except: pass
+            except Exception as e: logger.error(f"Dosya gönderme hatası: {e}")
 
     # --- 5. AYLIK LOGLAMA ---
     def log_to_monthly_json(self, item):
@@ -165,28 +166,26 @@ class IntelThread:
                 json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
-    # --- 6. YARDIMCI VE FORMATLAMA ---
+    # --- 6. FORMATLAMA VE ÇİFT BUTON SİSTEMİ ---
     async def format_alert(self, item, is_hourly=False):
         score = item.get('score', 0)
         
-        # --- MALİYET & PERFORMANS OPTİMİZASYONU ---
-        # AI'yı sadece gerçekten önemliyse çalıştır
+        # --- KADEMELİ ANALİZ (TIERED ANALYSIS) ---
         use_ai = False
         text_check = (item.get('title', '') + item.get('desc', '')).lower()
         
+        # Kritiklik Şartları
         if score >= 7.0: use_ai = True
         elif item['source'] == "CISA KEV": use_ai = True
         elif any(kw in text_check for kw in ["exploit", "zero-day", "rce", "remote code"]): use_ai = True
 
         if use_ai:
             ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''))
-            ai_output = f"🧠 <b>AI Analizi & Çözüm:</b>\n{ai_analiz_raw}\n"
+            ai_output = f"🧠 <b>AI Analizi & Aksiyon:</b>\n{ai_analiz_raw}\n"
         else:
-            # Düşük öncelik için standart çeviri (Hızlı & Bedava)
             tr_desc = self.translate_text(item.get('desc', ''))
             ai_output = f"ℹ️ <b>Özet (Translate):</b>\n{tr_desc}\n"
-        # ------------------------------------------
-
+        
         system_name, hashtags = self.detect_os_and_tags(item['title'] + " " + item['desc'])
         severity_label, icon = self.get_severity_info(score)
         epss_str = await self.enrich_with_epss(item['id'])
@@ -202,7 +201,32 @@ class IntelThread:
             f"🏷 <i>{hashtags}</i>"
         )
 
-    # --- 7. DİĞER YARDIMCI FONKSİYONLAR ---
+    async def send_telegram_card(self, message, link=None, search_query=None):
+        """Çift Butonlu Mesaj Gönderimi"""
+        if not self.tg_token: return
+        url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
+        payload = {"chat_id": self.tg_chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
+        
+        keyboard = []
+        # Buton 1: Kaynak
+        if link:
+            keyboard.append({"text": "🔗 Detay / Kaynak", "url": link})
+        
+        # Buton 2: Çözüm Ara (Google Search)
+        if search_query:
+            safe_q = search_query.replace(" ", "+")
+            # Google'da 'ID + patch + solution' araması yaptıran link
+            search_url = f"https://www.google.com/search?q={safe_q}+solution+patch+advisory"
+            keyboard.append({"text": "🛡️ Çözüm Ara", "url": search_url})
+
+        if keyboard:
+            payload["reply_markup"] = {"inline_keyboard": [keyboard]}
+
+        async with aiohttp.ClientSession() as session:
+            try: await session.post(url, json=payload)
+            except: pass
+
+    # --- 7. YARDIMCI VE CORE ---
     def load_json(self, filepath, set_mode=False):
         if os.path.exists(filepath):
             try:
@@ -302,15 +326,6 @@ class IntelThread:
         try: return self.translator.translate(text[:450])
         except: return text
 
-    async def send_telegram_card(self, message, link=None):
-        if not self.tg_token: return
-        url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
-        payload = {"chat_id": self.tg_chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
-        if link: payload["reply_markup"] = {"inline_keyboard": [[{"text": "🔗 Kaynak", "url": link}]]}
-        async with aiohttp.ClientSession() as session:
-            try: await session.post(url, json=payload)
-            except: pass
-
     async def send_telegram_photo(self, photo_url, caption):
         if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
@@ -387,6 +402,7 @@ class IntelThread:
         for threat in all_threats:
             if threat["id"] not in self.known_ids:
                 self.known_ids.add(threat["id"])
+                
                 is_critical = self.check_is_critical(threat)
                 if is_critical and threat['score'] == 0: threat['score'] = 9.5
                 
@@ -396,7 +412,8 @@ class IntelThread:
                 
                 if is_critical:
                     msg = await self.format_alert(threat, is_hourly=False)
-                    await self.send_telegram_card(msg, link=threat['link'])
+                    # Çift Buton İçin Parametre Eklendi
+                    await self.send_telegram_card(msg, link=threat['link'], search_query=threat['id'])
                 else:
                     self.pending_reports.append(threat)
 
@@ -406,7 +423,8 @@ class IntelThread:
                 await self.send_telegram_card(f"⏰ <b>SAATLİK ÖZET ({len(self.pending_reports)})</b>")
                 for item in self.pending_reports:
                     msg = await self.format_alert(item, is_hourly=True)
-                    await self.send_telegram_card(msg, link=item['link'])
+                    # Çift Buton İçin Parametre Eklendi
+                    await self.send_telegram_card(msg, link=item['link'], search_query=item['id'])
                     await asyncio.sleep(1)
                 self.pending_reports = []
             self.last_flush_time = datetime.now()
