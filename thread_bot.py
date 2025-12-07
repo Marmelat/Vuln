@@ -21,10 +21,13 @@ class IntelThread:
         self.tg_token = os.getenv("TELEGRAM_TOKEN")
         self.tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         
+        # ChatOps için son mesaj ID'si
+        self.last_update_id = 0
+        
         # Çevirmen
         self.translator = GoogleTranslator(source='auto', target='tr')
         
-        # --- GENİŞLETİLMİŞ KAYNAKLAR (PLUGIN & APP ODAKLI) ---
+        # --- GENİŞLETİLMİŞ KAYNAKLAR (TENABLE DAHİL) ---
         self.sources = [
             # 1. STANDART CVE/DEVLET KAYNAKLARI
             {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
@@ -33,23 +36,24 @@ class IntelThread:
             {"name": "CERT-EU", "url": "https://www.cert.europa.eu/publications/security-advisories/rss", "type": "feed"},
             
             # 2. VENDOR (ÜRETİCİ) KAYNAKLARI
+            {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"}, # EKLENDİ (KRİTİK)
             {"name": "MSRC (Microsoft)", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
             {"name": "Fortinet", "url": "https://filestore.fortinet.com/fortiguard/rss/ir.xml", "type": "feed"},
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             
-            # 3. OPEN SOURCE & LIBRARY & PLUGIN KAYNAKLARI (OSV MANTIĞI)
-            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, # Google OSV buradan beslenir
-            {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, # WordPress Pluginleri için KRAL kaynak
-            {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, # Kütüphane ve App zafiyetleri
-            {"name": "Patchstack", "url": "https://patchstack.com/database/rss", "type": "feed"}, # Plugin zafiyetleri için özel
+            # 3. OPEN SOURCE & LIBRARY & PLUGIN KAYNAKLARI
+            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
+            {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, 
+            {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
+            {"name": "Patchstack", "url": "https://patchstack.com/database/rss", "type": "feed"}, 
             
             # 4. ARAŞTIRMA & EXPLOIT KAYNAKLARI
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "Exploit-DB", "url": "https://www.exploit-db.com/rss.xml", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
-            {"name": "TrendMicro Research", "url": "https://feeds.feedburner.com/TrendMicroResearch", "type": "feed"},
+            {"name": "TrendMicro", "url": "https://feeds.feedburner.com/TrendMicroResearch", "type": "feed"},
         ]
         
         self.memory_file = "processed_intelligence.json"
@@ -63,7 +67,81 @@ class IntelThread:
         self.last_flush_time = datetime.now()
         self.last_heartbeat_date = None
 
-    # --- AYLIK LOGLAMA SİSTEMİ (SENİN İSTEDİĞİN ÖZELLİK) ---
+    # --- CHATOPS: KOMUT DİNLEME VE YÖNETME ---
+    async def check_commands(self):
+        """Telegram'dan gelen komutları kontrol eder (/durum, /indir vb.)"""
+        if not self.tg_token: return
+
+        url = f"https://api.telegram.org/bot{self.tg_token}/getUpdates"
+        params = {"offset": self.last_update_id + 1, "timeout": 1}
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        for update in data.get("result", []):
+                            self.last_update_id = update["update_id"]
+                            
+                            if "message" in update and "text" in update["message"]:
+                                chat_id = update["message"]["chat"]["id"]
+                                text = update["message"]["text"]
+                                
+                                # Sadece tanımlı chat ID'den gelen komutları kabul et
+                                if str(chat_id) == str(self.tg_chat_id):
+                                    await self.handle_command(text)
+            except Exception as e:
+                logger.error(f"Komut Okuma Hatası: {e}")
+
+    async def handle_command(self, command):
+        cmd = command.lower().strip()
+        
+        if cmd in ["/durum", "/status"]:
+            stats = self.daily_stats
+            msg = (
+                f"🤖 <b>SİSTEM DURUM RAPORU</b>\n"
+                f"✅ Bot Aktif\n"
+                f"📅 Tarih: {stats.get('date')}\n"
+                f"📊 Günlük Tespit: <b>{stats.get('total', 0)}</b>\n"
+                f"🛑 Kritik: {stats.get('critical', 0)} | 🔴 Yüksek: {stats.get('high', 0)}\n"
+                f"💾 Hafıza: {len(self.known_ids)} kayıt\n"
+                f"📡 Kaynaklar: {len(self.sources)} adet"
+            )
+            await self.send_telegram_card(msg)
+
+        elif cmd in ["/rapor", "/indir", "/download"]:
+            tr_timezone = pytz.timezone('Europe/Istanbul')
+            dosya_ismi = datetime.now(tr_timezone).strftime("%m-%Y.json")
+            
+            if os.path.exists(dosya_ismi):
+                await self.send_telegram_card(f"📂 <b>{dosya_ismi}</b> hazırlanıyor...")
+                await self.send_telegram_file(dosya_ismi)
+            else:
+                await self.send_telegram_card(f"⚠️ <b>{dosya_ismi}</b> henüz oluşmadı.")
+
+        elif cmd in ["/yardim", "/help"]:
+            msg = (
+                "🛠 <b>KOMUT LİSTESİ</b>\n"
+                "• /durum : Sistem sağlığı ve istatistikler\n"
+                "• /indir : Bu ayın veritabanını (.json) indir\n"
+                "• /tara  : Manuel tarama başlat"
+            )
+            await self.send_telegram_card(msg)
+            
+        elif cmd == "/tara":
+            await self.send_telegram_card("🚀 Manuel tarama emri alındı, işlem başlatılıyor...")
+
+    async def send_telegram_file(self, filepath):
+        """Telegram üzerinden dosya gönderir"""
+        url = f"https://api.telegram.org/bot{self.tg_token}/sendDocument"
+        data = aiohttp.FormData()
+        data.add_field('chat_id', self.tg_chat_id)
+        data.add_field('document', open(filepath, 'rb'), filename=os.path.basename(filepath))
+        async with aiohttp.ClientSession() as session:
+            try: await session.post(url, data=data)
+            except Exception as e: logger.error(f"Dosya gönderme hatası: {e}")
+
+    # --- AYLIK LOGLAMA SİSTEMİ ---
     def log_to_monthly_json(self, item):
         try:
             tr_timezone = pytz.timezone('Europe/Istanbul')
@@ -106,33 +184,27 @@ class IntelThread:
         except Exception: pass
 
     def normalize_id(self, raw_id, link="", title=""):
-        """
-        GELİŞMİŞ DEDUPLICATION:
-        CVE, GHSA (GitHub), ZDI ve WPVDB (Wordfence) ID'lerini yakalar.
-        """
         text_search = f"{raw_id} {link} {title}".upper()
         
-        # 1. CVE (Evrensel)
+        # 1. CVE
         cve_match = re.search(r"CVE-\d{4}-\d{4,7}", text_search)
         if cve_match: return cve_match.group(0) 
             
-        # 2. GitHub Advisory (OSV ile ortak ID yapısı)
+        # 2. GHSA (GitHub/OSV)
         ghsa_match = re.search(r"GHSA-[a-zA-Z0-9-]{10,}", text_search)
         if ghsa_match: return ghsa_match.group(0)
 
-        # 3. ZDI (Zero Day Initiative)
+        # 3. ZDI
         zdi_match = re.search(r"ZDI-\d{2}-\d{3,}", text_search)
         if zdi_match: return zdi_match.group(0)
 
-        # 4. Fallback: URL sonu
+        # 4. Fallback URL
         if "http" in raw_id: return raw_id.split("/")[-1][:25]
-            
         return raw_id[:25]
 
     def extract_score(self, item):
         if item.get('score', 0) > 0: return float(item['score'])
         text = (item.get('title', '') + " " + item.get('desc', '')).lower()
-        # CVSS skorunu metinden ayıklama
         match = re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", text)
         if match:
             try: return float(match.group(1))
@@ -156,7 +228,6 @@ class IntelThread:
     async def check_heartbeat(self):
         now = datetime.now()
         today_str = str(date.today())
-        # Sabah 09:00 - 10:00 arası kalp atışı
         if self.last_heartbeat_date != today_str and 9 <= now.hour < 10:
             msg = f"🤖 <b>GÜNLÜK KONTROL</b>\n✅ Sistem Aktif\n📡 Kaynak: {len(self.sources)}"
             await self.send_telegram_card(msg)
@@ -199,10 +270,11 @@ class IntelThread:
             "android": ("Android OS", "#Android"),
             "ios": ("Apple iOS", "#iOS"),
             "wordpress": ("WordPress", "#WordPress"),
-            "plugin": ("Eklenti/Plugin", "#PluginVuln"), # YENİ TAG
+            "plugin": ("Eklenti/Plugin", "#PluginVuln"),
             "sql": (None, "#SQLi"),
             "xss": (None, "#XSS"),
-            "rce": (None, "#RCE")
+            "rce": (None, "#RCE"),
+            "nessus": ("Nessus Plugin", "#Nessus") # Nessus tag'i eklendi
         }
         for key, val in mapping.items():
             if key in text:
@@ -326,6 +398,9 @@ class IntelThread:
             return [item for sublist in results for item in sublist]
 
     async def process_intelligence(self):
+        # 1. ÖNCE KOMUT VAR MI DİYE BAK
+        await self.check_commands()
+        
         logger.info("🔎 Genişletilmiş Tehdit İstihbaratı Taranıyor...")
         self.check_daily_reset()
         await self.check_heartbeat()
@@ -341,7 +416,7 @@ class IntelThread:
                 self.update_daily_stats(threat)
                 self.save_json(self.memory_file, self.known_ids)
                 
-                # AYLIK LOGLAMA
+                # AYLIK LOGLAMA YAP
                 self.log_to_monthly_json(threat)
                 
                 if is_critical:
