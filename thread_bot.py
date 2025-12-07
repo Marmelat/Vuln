@@ -6,6 +6,7 @@ import os
 import re
 import pytz
 import feedparser
+import google.generativeai as genai
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
@@ -17,43 +18,48 @@ logger = logging.getLogger("SecurityBot")
 
 class IntelThread:
     def __init__(self):
-        # Telegram Ayarları
+        # --- 1. AYARLAR ---
         self.tg_token = os.getenv("TELEGRAM_TOKEN")
         self.tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         
-        # ChatOps için son mesaj ID'si
+        # Gemini AI Ayarları
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if self.gemini_api_key:
+            genai.configure(api_key=self.gemini_api_key)
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
+        else:
+            logger.warning("⚠️ GEMINI_API_KEY eksik! Standart çeviri modu aktif.")
+            self.model = None
+
+        # ChatOps Takibi
         self.last_update_id = 0
         
-        # Çevirmen
+        # Yedek Çevirmen
         self.translator = GoogleTranslator(source='auto', target='tr')
         
-        # --- GENİŞLETİLMİŞ KAYNAKLAR (TENABLE DAHİL) ---
+        # --- 2. ZAFİYET KAYNAKLARI ---
         self.sources = [
-            # 1. STANDART CVE/DEVLET KAYNAKLARI
+            # STANDART & DEVLET
             {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
             {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
             {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=40&pubStartDate=", "type": "json_nist"},
             {"name": "CERT-EU", "url": "https://www.cert.europa.eu/publications/security-advisories/rss", "type": "feed"},
             
-            # 2. VENDOR (ÜRETİCİ) KAYNAKLARI
-            {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"}, # EKLENDİ (KRİTİK)
+            # VENDOR & PLUGIN
+            {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"},
             {"name": "MSRC (Microsoft)", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
             {"name": "Fortinet", "url": "https://filestore.fortinet.com/fortiguard/rss/ir.xml", "type": "feed"},
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
-            
-            # 3. OPEN SOURCE & LIBRARY & PLUGIN KAYNAKLARI
-            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
             {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, 
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
-            {"name": "Patchstack", "url": "https://patchstack.com/database/rss", "type": "feed"}, 
+            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
             
-            # 4. ARAŞTIRMA & EXPLOIT KAYNAKLARI
+            # EXPLOIT & ARAŞTIRMA
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "Exploit-DB", "url": "https://www.exploit-db.com/rss.xml", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
-            {"name": "TrendMicro", "url": "https://feeds.feedburner.com/TrendMicroResearch", "type": "feed"},
         ]
         
         self.memory_file = "processed_intelligence.json"
@@ -67,14 +73,34 @@ class IntelThread:
         self.last_flush_time = datetime.now()
         self.last_heartbeat_date = None
 
-    # --- CHATOPS: KOMUT DİNLEME VE YÖNETME ---
-    async def check_commands(self):
-        """Telegram'dan gelen komutları kontrol eder (/durum, /indir vb.)"""
-        if not self.tg_token: return
+    # --- 3. GEMINI AI ANALİZ MOTORU ---
+    async def ask_gemini(self, title, description):
+        if not self.model:
+            return self.translate_text(f"{title}\n{description}")
 
+        try:
+            prompt = (
+                f"Sen kıdemli bir siber güvenlik uzmanısın. Aşağıdaki zafiyet verisini analiz et.\n"
+                f"Başlık: {title}\n"
+                f"Açıklama: {description}\n\n"
+                f"Lütfen çıktıyı Türkçe olarak şu formatta hazırla (Markdown kullanma, sadece metin ve emoji):\n"
+                f"1. Zafiyet Özeti (1 cümle)\n"
+                f"2. Etki Analizi (Saldırgan ne yapabilir?)\n"
+                f"3. Çözüm Önerisi (Remediation)\n\n"
+                f"Yanıtın teknik personel için net olsun."
+            )
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, self.model.generate_content, prompt)
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Gemini API Hatası: {e}")
+            return self.translate_text(f"{title}\n{description}")
+
+    # --- 4. CHATOPS ---
+    async def check_commands(self):
+        if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/getUpdates"
         params = {"offset": self.last_update_id + 1, "timeout": 1}
-
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.get(url, params=params) as response:
@@ -82,133 +108,128 @@ class IntelThread:
                         data = await response.json()
                         for update in data.get("result", []):
                             self.last_update_id = update["update_id"]
-                            
                             if "message" in update and "text" in update["message"]:
-                                chat_id = update["message"]["chat"]["id"]
-                                text = update["message"]["text"]
-                                
-                                # Sadece tanımlı chat ID'den gelen komutları kabul et
-                                if str(chat_id) == str(self.tg_chat_id):
-                                    await self.handle_command(text)
-            except Exception as e:
-                logger.error(f"Komut Okuma Hatası: {e}")
+                                if str(update["message"]["chat"]["id"]) == str(self.tg_chat_id):
+                                    await self.handle_command(update["message"]["text"])
+            except Exception: pass
 
     async def handle_command(self, command):
         cmd = command.lower().strip()
-        
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
+            ai_status = "✅ Gemini (Akıllı Mod)" if self.model else "⚠️ Pasif"
             msg = (
-                f"🤖 <b>SİSTEM DURUM RAPORU</b>\n"
-                f"✅ Bot Aktif\n"
-                f"📅 Tarih: {stats.get('date')}\n"
-                f"📊 Günlük Tespit: <b>{stats.get('total', 0)}</b>\n"
-                f"🛑 Kritik: {stats.get('critical', 0)} | 🔴 Yüksek: {stats.get('high', 0)}\n"
-                f"💾 Hafıza: {len(self.known_ids)} kayıt\n"
-                f"📡 Kaynaklar: {len(self.sources)} adet"
+                f"🤖 <b>SİSTEM DURUMU</b>\n"
+                f"🧠 AI: {ai_status}\n"
+                f"📅 {stats.get('date')}\n"
+                f"📊 Tespit: {stats.get('total', 0)} (🛑 {stats.get('critical', 0)})\n"
+                f"📡 Kaynaklar: {len(self.sources)}"
             )
             await self.send_telegram_card(msg)
-
-        elif cmd in ["/rapor", "/indir", "/download"]:
-            tr_timezone = pytz.timezone('Europe/Istanbul')
-            dosya_ismi = datetime.now(tr_timezone).strftime("%m-%Y.json")
-            
-            if os.path.exists(dosya_ismi):
-                await self.send_telegram_card(f"📂 <b>{dosya_ismi}</b> hazırlanıyor...")
-                await self.send_telegram_file(dosya_ismi)
+        elif cmd in ["/indir", "/rapor"]:
+            tr = pytz.timezone('Europe/Istanbul')
+            dosya = datetime.now(tr).strftime("%m-%Y.json")
+            if os.path.exists(dosya):
+                await self.send_telegram_card(f"📂 <b>{dosya}</b> gönderiliyor...")
+                await self.send_telegram_file(dosya)
             else:
-                await self.send_telegram_card(f"⚠️ <b>{dosya_ismi}</b> henüz oluşmadı.")
-
-        elif cmd in ["/yardim", "/help"]:
-            msg = (
-                "🛠 <b>KOMUT LİSTESİ</b>\n"
-                "• /durum : Sistem sağlığı ve istatistikler\n"
-                "• /indir : Bu ayın veritabanını (.json) indir\n"
-                "• /tara  : Manuel tarama başlat"
-            )
-            await self.send_telegram_card(msg)
-            
+                await self.send_telegram_card(f"⚠️ <b>{dosya}</b> bulunamadı.")
         elif cmd == "/tara":
-            await self.send_telegram_card("🚀 Manuel tarama emri alındı, işlem başlatılıyor...")
+            await self.send_telegram_card("🚀 Tarama başlatılıyor...")
 
     async def send_telegram_file(self, filepath):
-        """Telegram üzerinden dosya gönderir"""
         url = f"https://api.telegram.org/bot{self.tg_token}/sendDocument"
         data = aiohttp.FormData()
         data.add_field('chat_id', self.tg_chat_id)
         data.add_field('document', open(filepath, 'rb'), filename=os.path.basename(filepath))
         async with aiohttp.ClientSession() as session:
             try: await session.post(url, data=data)
-            except Exception as e: logger.error(f"Dosya gönderme hatası: {e}")
+            except: pass
 
-    # --- AYLIK LOGLAMA SİSTEMİ ---
+    # --- 5. AYLIK LOGLAMA ---
     def log_to_monthly_json(self, item):
         try:
             tr_timezone = pytz.timezone('Europe/Istanbul')
             simdi = datetime.now(tr_timezone)
-            # Ayın son günü 23:50 sonrası için 10dk ileri sarıp yeni aya geçme mantığı
             sanal_zaman = simdi + timedelta(minutes=10)
             dosya_ismi = sanal_zaman.strftime("%m-%Y.json")
-            
             item['log_zamani'] = simdi.strftime("%Y-%m-%d %H:%M:%S")
-
-            mevcut_veriler = []
+            mevcut = []
             if os.path.exists(dosya_ismi):
                 try:
                     with open(dosya_ismi, 'r', encoding='utf-8') as f:
-                        mevcut_veriler = json.load(f)
-                except json.JSONDecodeError: mevcut_veriler = []
-
-            mevcut_veriler.append(item)
-
+                        mevcut = json.load(f)
+                except: mevcut = []
+            mevcut.append(item)
             with open(dosya_ismi, 'w', encoding='utf-8') as f:
-                json.dump(mevcut_veriler, f, ensure_ascii=False, indent=4)
-        except Exception as e:
-            logger.error(f"Aylık Loglama Hatası: {e}")
+                json.dump(mevcut, f, ensure_ascii=False, indent=4)
+        except: pass
 
-    # --- YARDIMCI FONKSİYONLAR ---
+    # --- 6. YARDIMCI VE FORMATLAMA ---
+    async def format_alert(self, item, is_hourly=False):
+        score = item.get('score', 0)
+        
+        # --- MALİYET & PERFORMANS OPTİMİZASYONU ---
+        # AI'yı sadece gerçekten önemliyse çalıştır
+        use_ai = False
+        text_check = (item.get('title', '') + item.get('desc', '')).lower()
+        
+        if score >= 7.0: use_ai = True
+        elif item['source'] == "CISA KEV": use_ai = True
+        elif any(kw in text_check for kw in ["exploit", "zero-day", "rce", "remote code"]): use_ai = True
+
+        if use_ai:
+            ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''))
+            ai_output = f"🧠 <b>AI Analizi & Çözüm:</b>\n{ai_analiz_raw}\n"
+        else:
+            # Düşük öncelik için standart çeviri (Hızlı & Bedava)
+            tr_desc = self.translate_text(item.get('desc', ''))
+            ai_output = f"ℹ️ <b>Özet (Translate):</b>\n{tr_desc}\n"
+        # ------------------------------------------
+
+        system_name, hashtags = self.detect_os_and_tags(item['title'] + " " + item['desc'])
+        severity_label, icon = self.get_severity_info(score)
+        epss_str = await self.enrich_with_epss(item['id'])
+        header = "ACİL UYARI" if not is_hourly else "ZAFİYET DETAYI"
+        
+        return (
+            f"<b>{icon} {header}</b>\n"
+            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+            f"🎯 <b>{item['id']}</b> | {system_name}\n"
+            f"📊 <b>CVSS:</b> {score} | <b>EPSS:</b> {epss_str}\n"
+            f"📂 {item['source']}\n\n"
+            f"{ai_output}\n"
+            f"🏷 <i>{hashtags}</i>"
+        )
+
+    # --- 7. DİĞER YARDIMCI FONKSİYONLAR ---
     def load_json(self, filepath, set_mode=False):
         if os.path.exists(filepath):
             try:
                 with open(filepath, 'r') as f:
                     data = json.load(f)
                     return set(data) if set_mode else data
-            except Exception: return set() if set_mode else {}
+            except: return set() if set_mode else {}
         return set() if set_mode else {}
 
     def save_json(self, filepath, data):
         try:
             with open(filepath, 'w') as f:
-                json_data = list(data) if isinstance(data, set) else data
-                json.dump(json_data, f)
-        except Exception: pass
+                json.dump(list(data) if isinstance(data, set) else data, f)
+        except: pass
 
     def normalize_id(self, raw_id, link="", title=""):
-        text_search = f"{raw_id} {link} {title}".upper()
-        
-        # 1. CVE
-        cve_match = re.search(r"CVE-\d{4}-\d{4,7}", text_search)
-        if cve_match: return cve_match.group(0) 
-            
-        # 2. GHSA (GitHub/OSV)
-        ghsa_match = re.search(r"GHSA-[a-zA-Z0-9-]{10,}", text_search)
-        if ghsa_match: return ghsa_match.group(0)
-
-        # 3. ZDI
-        zdi_match = re.search(r"ZDI-\d{2}-\d{3,}", text_search)
-        if zdi_match: return zdi_match.group(0)
-
-        # 4. Fallback URL
+        text = f"{raw_id} {link} {title}".upper()
+        if m := re.search(r"CVE-\d{4}-\d{4,7}", text): return m.group(0)
+        if m := re.search(r"GHSA-[a-zA-Z0-9-]{10,}", text): return m.group(0)
+        if m := re.search(r"ZDI-\d{2}-\d{3,}", text): return m.group(0)
         if "http" in raw_id: return raw_id.split("/")[-1][:25]
         return raw_id[:25]
 
     def extract_score(self, item):
         if item.get('score', 0) > 0: return float(item['score'])
         text = (item.get('title', '') + " " + item.get('desc', '')).lower()
-        match = re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", text)
-        if match:
-            try: return float(match.group(1))
-            except: return 0.0
+        if m := re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", text): return float(m.group(1))
         return 0.0
 
     async def enrich_with_epss(self, cve_id):
@@ -216,12 +237,10 @@ class IntelThread:
         url = f"https://api.first.org/data/v1/epss?cve={cve_id}"
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.get(url, timeout=5) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get("data"):
-                            epss = float(data["data"][0].get("epss", 0))
-                            return f"%{epss * 100:.2f}"
+                async with session.get(url, timeout=5) as r:
+                    if r.status == 200:
+                        d = await r.json()
+                        if d.get("data"): return f"%{float(d['data'][0].get('epss',0))*100:.2f}"
             except: pass
         return "N/A"
 
@@ -229,8 +248,8 @@ class IntelThread:
         now = datetime.now()
         today_str = str(date.today())
         if self.last_heartbeat_date != today_str and 9 <= now.hour < 10:
-            msg = f"🤖 <b>GÜNLÜK KONTROL</b>\n✅ Sistem Aktif\n📡 Kaynak: {len(self.sources)}"
-            await self.send_telegram_card(msg)
+            ai_stat = "Akıllı (Gemini)" if self.model else "Standart"
+            await self.send_telegram_card(f"🤖 <b>GÜNLÜK KONTROL</b>\n✅ Sistem: Aktif\n🧠 Mod: {ai_stat}")
             self.last_heartbeat_date = today_str
 
     def check_daily_reset(self, force_check=False):
@@ -246,8 +265,8 @@ class IntelThread:
         if s >= 9.0: return "🛑 KRİTİK", "🛑"
         elif s >= 7.0: return "🔴 Yüksek", "🔴"
         elif s >= 4.0: return "🟠 Orta", "🟠"
-        elif s > 0.0:  return "🟡 Düşük", "🟡"
-        else: return "🔵 Bilgi", "🔵"
+        elif s > 0.0: return "🟡 Düşük", "🟡"
+        return "🔵 Bilgi", "🔵"
 
     def update_daily_stats(self, item):
         self.check_daily_reset()
@@ -256,7 +275,7 @@ class IntelThread:
         if s >= 9.0: self.daily_stats["critical"] += 1
         elif s >= 7.0: self.daily_stats["high"] += 1
         elif s >= 4.0: self.daily_stats["medium"] += 1
-        elif s > 0.0: self.daily_stats["low"] += 1
+        else: self.daily_stats["low"] += 1
         self.daily_stats["items"].append({"title": item.get("title", ""), "score": s})
         self.save_json(self.daily_stats_file, self.daily_stats)
 
@@ -267,19 +286,15 @@ class IntelThread:
         mapping = {
             "windows": ("Microsoft Windows", "#Windows"),
             "linux": ("Linux Kernel", "#Linux"),
-            "android": ("Android OS", "#Android"),
-            "ios": ("Apple iOS", "#iOS"),
             "wordpress": ("WordPress", "#WordPress"),
             "plugin": ("Eklenti/Plugin", "#PluginVuln"),
-            "sql": (None, "#SQLi"),
-            "xss": (None, "#XSS"),
-            "rce": (None, "#RCE"),
-            "nessus": ("Nessus Plugin", "#Nessus") # Nessus tag'i eklendi
+            "nessus": ("Nessus Plugin", "#Nessus"),
+            "sql": (None, "#SQLi"), "xss": (None, "#XSS"), "rce": (None, "#RCE")
         }
-        for key, val in mapping.items():
-            if key in text:
-                if val[0]: system = val[0]
-                tags.append(val[1])
+        for k, v in mapping.items():
+            if k in text:
+                if v[0]: system = v[0]
+                tags.append(v[1])
         return system, " ".join(list(set(tags)))
 
     def translate_text(self, text):
@@ -288,59 +303,28 @@ class IntelThread:
         except: return text
 
     async def send_telegram_card(self, message, link=None):
-        if not self.tg_token or not self.tg_chat_id: return
+        if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
         payload = {"chat_id": self.tg_chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
-        if link:
-            payload["reply_markup"] = {"inline_keyboard": [[{"text": "🔗 Kaynağa Git", "url": link}]]}
+        if link: payload["reply_markup"] = {"inline_keyboard": [[{"text": "🔗 Kaynak", "url": link}]]}
         async with aiohttp.ClientSession() as session:
             try: await session.post(url, json=payload)
             except: pass
 
     async def send_telegram_photo(self, photo_url, caption):
-        if not self.tg_token or not self.tg_chat_id: return
+        if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
         payload = {"chat_id": self.tg_chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
         async with aiohttp.ClientSession() as session:
             try: await session.post(url, json=payload)
             except: pass
 
-    async def format_alert(self, item, is_hourly=False):
-        tr_title = self.translate_text(item.get('title', ''))
-        tr_desc = self.translate_text(item.get('desc', ''))
-        system_name, hashtags = self.detect_os_and_tags(item['title'] + " " + item['desc'])
-        
-        score = item.get('score', 0)
-        severity_label, icon = self.get_severity_info(score)
-        
-        epss_str = await self.enrich_with_epss(item['id'])
-        
-        header = "ACİL UYARI" if not is_hourly else "ZAFİYET DETAYI"
-        
-        return (
-            f"<b>{icon} {header}</b>\n"
-            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-            f"🎯 <b>{item['id']}</b> | {system_name}\n"
-            f"📊 <b>CVSS:</b> {score} | <b>EPSS:</b> {epss_str}\n"
-            f"📂 {item['source']}\n\n"
-            f"{tr_desc}\n\n"
-            f"🏷 <i>{hashtags}</i>"
-        )
-
     async def send_daily_summary_report(self):
         stats = self.daily_stats
         if stats["total"] == 0: return
-        chart_config = {
-            "type": "bar",
-            "data": {
-                "labels": ["Kritik", "Yüksek", "Orta", "Düşük"],
-                "datasets": [{"label": "Sayı", "data": [stats['critical'], stats['high'], stats['medium'], stats['low']], "backgroundColor": ["#8B0000", "#D32F2F", "#F57C00", "#FBC02D"]}]
-            },
-            "options": {"plugins": {"legend": {"display": False}}}
-        }
-        chart_url = f"https://quickchart.io/chart?c={json.dumps(chart_config)}&w=500&h=300"
-        caption = f"📊 <b>GÜNLÜK RAPOR</b>\n🗓 {stats['date']}\n🔴 Toplam: {stats['total']}"
-        await self.send_telegram_photo(chart_url, caption)
+        chart = {"type": "bar", "data": {"labels": ["Kr", "Yü", "Or", "Dü"], "datasets": [{"data": [stats['critical'], stats['high'], stats['medium'], stats['low']]}]}}
+        url = f"https://quickchart.io/chart?c={json.dumps(chart)}&w=400&h=250"
+        await self.send_telegram_photo(url, f"📊 <b>GÜNLÜK RAPOR</b>\nTespit: {stats['total']}")
 
     def check_is_critical(self, item):
         if item['source'] == "CISA KEV": return True
@@ -353,13 +337,12 @@ class IntelThread:
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             items = []
-            
             if "json" in mode:
                 async with session.get(source["url"], timeout=timeout) as response:
                     if response.status == 200:
                         data = await response.json()
                         if mode == "json_cisa":
-                            items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in data.get("vulnerabilities", [])[:5]]
+                             items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in data.get("vulnerabilities", [])[:5]]
                         elif mode == "json_nist":
                              yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S.000')
                              async with session.get(source["url"]+yesterday, timeout=timeout) as response:
@@ -372,7 +355,6 @@ class IntelThread:
                                             items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST kaydı.", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": metrics[0].get("cvssData", {}).get("baseScore", 0)})
                         elif mode == "json_cveorg":
                              items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await response.json()).get("cve_ids", [])[:10]]
-
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout) as response:
                     if response.status == 200:
@@ -380,7 +362,6 @@ class IntelThread:
                         feed = feedparser.parse(content)
                         for entry in feed.entries[:5]:
                             items.append({"raw_id": entry.get('link', ''), "title": entry.get('title', 'Başlık Yok'), "desc": (entry.get('summary') or entry.get('description') or "")[:500], "link": entry.get('link', ''), "score": 0})
-            
             final_items = []
             for i in items:
                 i['id'] = self.normalize_id(i["raw_id"], i["link"], i["title"])
@@ -388,8 +369,7 @@ class IntelThread:
                 if i['score'] == 0: i['score'] = self.extract_score(i)
                 final_items.append(i)
             return final_items
-
-        except Exception: return []
+        except: return []
 
     async def fetch_all(self):
         async with aiohttp.ClientSession() as session:
@@ -398,10 +378,8 @@ class IntelThread:
             return [item for sublist in results for item in sublist]
 
     async def process_intelligence(self):
-        # 1. ÖNCE KOMUT VAR MI DİYE BAK
         await self.check_commands()
-        
-        logger.info("🔎 Genişletilmiş Tehdit İstihbaratı Taranıyor...")
+        logger.info("🔎 Kademeli Analiz (Tiered Analysis) Taraması Başlıyor...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -409,14 +387,11 @@ class IntelThread:
         for threat in all_threats:
             if threat["id"] not in self.known_ids:
                 self.known_ids.add(threat["id"])
-                
                 is_critical = self.check_is_critical(threat)
                 if is_critical and threat['score'] == 0: threat['score'] = 9.5
                 
                 self.update_daily_stats(threat)
                 self.save_json(self.memory_file, self.known_ids)
-                
-                # AYLIK LOGLAMA YAP
                 self.log_to_monthly_json(threat)
                 
                 if is_critical:
