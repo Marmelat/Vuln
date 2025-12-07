@@ -100,3 +100,12 @@ sudo systemctl enable botum
 
 4. Logları İzleyin:
 sudo journalctl -u botum -f
+
+| Sürüm | Odak Noktası | Temel Amaç | Geliştirilen Kritik Özellikler |
+| :--- | :--- | :--- | :--- |
+| **v1.0** | **The Foundation**<br>*(Temel Yapı)* | Tehdit verilerini toplayıp Telegram'a iletmek. | • Standart kaynaklar (NIST, CVE, CISA)<br>• Tek yönlü mesaj iletimi<br>• Google Translate ile basit çeviri |
+| **v2.0** | **Data Retention**<br>*(Veri Arşivleme)* | Veri kaybını önlemek ve raporlanabilir kayıt tutmak. | • Aylık JSON rotasyonu (Örn: `12-2025.json`)<br>• Türkiye saati (pytz) entegrasyonu<br>• Otomatik ay sonu dosya geçişi |
+| **v3.0** | **Enhanced Coverage**<br>*(Geniş Kapsam)* | Uygulama/Plugin zafiyetlerini yakalamak ve tekrarı önlemek. | • Yeni Kaynaklar: Tenable, Wordfence, Snyk, GitHub<br>• Gelişmiş Deduplication (Tekilleştirme)<br>• Otomatik Etiketleme (`#WordPress`, `#RCE`) |
+| **v4.0** | **ChatOps**<br>*(İnteraktif Yönetim)* | Sunucuya girmeden botu uzaktan yönetebilmek. | • Komut Sistemi (`/durum`, `/indir`, `/tara`)<br>• Veritabanı dosyasını chat'ten indirme<br>• Watchdog mimarisi (Kesintisiz dinleme) |
+| **v5.0** | **The Brain (AI)**<br>*(Yapay Zeka)* | Sadece çeviri değil, teknik analiz ve yorumlama yapmak. | • Google Gemini LLM entegrasyonu<br>• Uzman analizi için özel Prompt mühendisliği<br>• Hata durumunda Fallback (Yedek) mekanizması |
+| **v6.0** | **Enterprise Grade**<br>*(Final Sürüm)* | Maliyeti düşürmek ve aksiyon odaklı çıktı üretmek. | • **Kademeli Analiz (Tiered):** Sadece kritiklerde AI kullanımı<br>• **Çift Buton:** Kaynak Linki + Google Çözüm Araması<br>• **Sanal Ortam:** `venv` ile izole çalışma yapısı |
