@@ -28,8 +28,8 @@ Projeyi yerel makinenize veya sunucunuza (VPS) kurmak için adımları izleyin.
 
 ### Adım 1: Repoyu Klonlayın
 ```bash
-git clone [https://github.com/KULLANICI_ADINIZ/REPO_ADINIZ.git](https://github.com/KULLANICI_ADINIZ/REPO_ADINIZ.git)
-cd REPO_ADINIZ
+git clone (https://github.com/Marmelat/Vuln)
+cd Vuln
 
 Adım 2: Sanal Ortam (Virtual Environment)
 Sistem kütüphanelerini korumak için sanal ortam kullanılması önerilir.
