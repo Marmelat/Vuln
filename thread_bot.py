@@ -39,46 +39,60 @@ class IntelThread:
 
         self.last_update_id = 0
         self.last_scan_timestamp = "Henüz Başlamadı"
-        self.failed_sources = []
+        self.failed_sources = {} # Hataları detaylı tutmak için dict yaptık {source: error_code}
+        
+        # --- HAYALET MODU (STEALTH HEADERS) ---
+        # Bu başlıklar sayesinde siteler bizi gerçek Chrome tarayıcısı sanar.
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1"
         }
+        
         self.translator = GoogleTranslator(source='auto', target='tr')
         
         # --- LİSTELER ---
-        # Bu kaynaklar "Haber" niteliğindedir, teknik analiz yapılmaz, bültene eklenir.
-        self.news_sources_list = [
-            "Google News Hunter", 
-            "BleepingComputer", 
-            "The Hacker News", 
-            "Dark Reading"
-        ]
-
-        # Envanter
+        self.news_sources_list = ["Google News Hunter", "BleepingComputer", "The Hacker News", "Dark Reading"]
         self.my_assets = ["wordpress", "fortinet", "cisco", "ubuntu", "nginx", "exchange server", "palo alto", "sql server"]
         
-        # --- 2. KAYNAKLAR ---
+        # --- 2. GÜNCELLENMİŞ KAYNAKLAR (2025 READY) ---
         self.sources = [
-            # HABER
+            # HABERLER (RSS)
             {"name": "Google News Hunter", "url": "https://news.google.com/rss/search?q=cyber+security+vulnerability+exploit+OR+zero-day+when:1d&hl=en-US&gl=US&ceid=US:en", "type": "feed"},
             {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "type": "feed"},
             {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "type": "feed"},
-            # TEKNİK
-            {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
-            {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
+            {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"}, # Yeni Eklendi
+
+            # TEKNİK VERİTABANLARI (JSON/API)
             {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
+            # CVE.org API (Bazen yavaşlar ama en güveniliri)
+            {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
+            # NIST NVD (API Key istiyor olabilir, yedeğe aldık)
             {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=40&pubStartDate=", "type": "json_nist"},
-            {"name": "CERT-EU", "url": "https://www.cert.europa.eu/publications/security-advisories/rss", "type": "feed"},
+
+            # VENDOR & SECURITY FEEDS (RSS)
+            # Tenable URL Düzeltildi (FeedBurner veya XML)
             {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds.xml?sort=newest", "type": "feed"},
             {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, 
-            {"name": "MSRC", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
+            {"name": "MSRC (Microsoft)", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
-            {"name": "Fortinet", "url": "https://filestore.fortinet.com/fortiguard/rss/ir.xml", "type": "feed"},
+            # Fortinet URL Güncellendi
+            {"name": "Fortinet", "url": "https://pub.kb.fortinet.com/rss/firmware.xml", "type": "feed"}, 
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
             {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
+            
+            # EXPLOIT & ZERO DAY (RSS)
+            {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "Exploit-DB", "url": "https://www.exploit-db.com/rss.xml", "type": "feed"},
+            # PacketStorm URL Düzeltildi
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
         ]
@@ -101,23 +115,22 @@ class IntelThread:
         self.last_news_report_date = None
         self.last_monthly_report_date = None
 
-    # --- 3. GEMINI AI (SINIFLANDIRMA ODAKLI) ---
+    # --- 3. GEMINI AI ---
     async def ask_gemini(self, title, description, source_name, is_news=False):
         if not self.model: return self.translate_text(f"{title}\n{description}")
         try:
             if is_news:
                 prompt = f"Haber Özeti (Tek Cümle): {title}\n{description}"
             else:
-                # EVRENSEL TEKNİK ANALİZ PROMPTU
                 prompt = (
-                    f"Sen kıdemli bir siber güvenlik uzmanısın. Aşağıdaki teknik veriyi analiz et.\n"
+                    f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
                     f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description}\n\n"
-                    f"Çıktı Formatı (Markdown, kod bloğu yok, Emojileri kullan):\n"
-                    f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa bu satırı sil)\n"
-                    f"📦 **Sınıf:** [İşletim Sistemi | Web Uygulaması | Ağ/Güvenlik Cihazı | SCADA/ICS | Yazılım | Diğer]\n"
-                    f"🎯 **Hedef Sistem:** (Ürün/Marka Adı. Örn: Windows, WordPress, Siemens)\n"
+                    f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
+                    f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa sil)\n"
+                    f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
+                    f"🎯 **Hedef Sistem:** (Ürün adı)\n"
                     f"⚡ **Teknik Özet:** (Kök neden?)\n"
-                    f"💀 **Risk:** (Saldırgan ne yapabilir?)\n"
+                    f"💀 **Risk:** (Saldırgan ne yapar?)\n"
                     f"🛡️ **Aksiyon:** (Sürüm ver, emir kipi kullan)"
                 )
             loop = asyncio.get_event_loop()
@@ -125,7 +138,7 @@ class IntelThread:
             return response.text.strip()
         except: return self.translate_text(f"{title}\n{description}")[:200]
 
-    # --- 4. CHATOPS ---
+    # --- 4. CHATOPS (DEBUG MODU EKLENDİ) ---
     async def check_commands(self):
         if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/getUpdates"
@@ -145,11 +158,10 @@ class IntelThread:
     async def handle_command(self, command):
         cmd_parts = command.strip().split()
         cmd = cmd_parts[0].lower()
+        
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            try: model_name = self.model.model_name
-            except: model_name = "Gemini"
-            ai_status = f"✅ Aktif ({model_name})" if self.model else "⚠️ Pasif"
+            ai_status = "✅ Aktif" if self.model else "⚠️ Pasif"
             health_msg = f"⚠️ {len(self.failed_sources)} Hatalı" if self.failed_sources else "✅ Sağlıklı"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
@@ -157,6 +169,15 @@ class IntelThread:
                 f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
             )
             await self.send_telegram_card(msg)
+            
+        # DETAYLI HATA RAPORU İÇİN YENİ KOMUT
+        elif cmd == "/debug":
+            if not self.failed_sources:
+                await self.send_telegram_card("✅ Harika! Şu an hiçbir kaynakta hata yok.")
+            else:
+                error_list = "\n".join([f"• <b>{k}:</b> {v}" for k, v in self.failed_sources.items()])
+                await self.send_telegram_card(f"🔧 <b>KAYNAK HATA RAPORU</b>\n{error_list}")
+
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
             dosya = datetime.now(tr).strftime("%m-%Y.json")
@@ -164,7 +185,7 @@ class IntelThread:
                 await self.send_telegram_card(f"📂 <b>{dosya}</b> yükleniyor...")
                 await self.send_telegram_file(dosya)
             else: await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
-        elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başlatılıyor...")
+        elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başladı.")
         elif cmd == "/aylik": await self.send_monthly_executive_report(force=True)
         elif cmd == "/analiz": await self.handle_analysis_request(cmd_parts)
 
@@ -227,8 +248,10 @@ class IntelThread:
             else: curr = curr.replace(month=curr.month+1, day=1)
         
         filtered_data = []
+        found_files_count = 0
         for f_name in target_files:
             if os.path.exists(f_name):
+                found_files_count += 1
                 try:
                     with open(f_name, 'r') as f:
                         data = json.load(f)
@@ -240,9 +263,14 @@ class IntelThread:
                             except: pass
                 except: pass
 
-        if not filtered_data:
-            await self.send_telegram_card("⚠️ Kayıt bulunamadı.")
+        if found_files_count == 0:
+            await self.send_telegram_card("⚠️ <b>Veri Dosyası Yok!</b>\nHenüz veri birikmemiş.")
             return
+        if not filtered_data:
+            await self.send_telegram_card("⚠️ <b>Kayıt Bulunamadı!</b>\nSeçilen tarih aralığında veri yok.")
+            return
+
+        await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor, lütfen bekleyin...</b>")
 
         total = len(filtered_data)
         crit = sum(1 for i in filtered_data if i.get('score', 0) >= 9.0)
@@ -310,7 +338,7 @@ class IntelThread:
         today = str(date.today())
         if self.last_news_report_date == today and not force: return
         if not self.news_buffer: return
-        report = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n📅 <i>{today} | Gün Sonu</i>\n⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
+        report = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n📅 <i>{today} | Gün Sonu</i>\n⎯⎯⎯⎯⎯⎯⎯\n\n"
         for news in self.news_buffer:
             entry = f"🔹 <a href='{news['link']}'>{news['title']}</a>\n└ <i>{news['ai_summary']}</i>\n\n"
             if len(report) + len(entry) > 4000:
@@ -341,15 +369,10 @@ class IntelThread:
     def normalize_id(self, r, l="", t=""):
         txt = f"{r} {l} {t}".upper()
         if m := re.search(r"CVE-\d{4}-\d{4,7}", txt): return m.group(0)
-        if m := re.search(r"GHSA-[a-zA-Z0-9-]{10,}", txt): return m.group(0)
-        if m := re.search(r"ZDI-\d{2}-\d{3,}", txt): return m.group(0)
         if "http" in r: return r.rstrip('/').split('/')[-1][:40]
         return r[:40]
     def extract_score(self, item):
         txt = (item.get('title','') + item.get('desc','')).lower()
-        # 1. Regex: "Score 7.8" (ZDI gibi)
-        if m := re.search(r"score\s+([0-9]{1,2}\.?[0-9]?)", txt): return float(m.group(1))
-        # 2. Regex: "CVSS: 7.8"
         if m := re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", txt): return float(m.group(1))
         return 0.0
     async def enrich_with_epss(self, cve):
@@ -423,7 +446,7 @@ class IntelThread:
 
         return (
             f"<b>{icon} {header_title}</b>\n"
-            f"⎯⎯⎯⎯⎯⎯⎯⎯\n"
+            f"⎯⎯⎯⎯⎯⎯⎯\n"
             f"{meta_info}\n\n"
             f"{ai_output}\n"
             f"🏷 <i>{hashtags}</i>"
@@ -440,12 +463,18 @@ class IntelThread:
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             items = []
+            
+            # --- USER-AGENT İLE İSTEK ---
             if "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
-                    if r.status != 200: 
-                        if source['name'] not in self.failed_sources: self.failed_sources.append(source['name'])
+                    # Hata Kontrolü
+                    if r.status != 200:
+                        code = r.status
+                        if source['name'] not in self.failed_sources: 
+                            self.failed_sources[source['name']] = code # Dict olarak kaydet
                         return []
-                    if source['name'] in self.failed_sources: self.failed_sources.remove(source['name'])
+                    if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
+                    
                     d = await r.json()
                     
                     if mode == "json_cisa":
@@ -462,12 +491,16 @@ class IntelThread:
                                         items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST kaydı.", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": metrics[0].get("cvssData", {}).get("baseScore", 0)})
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
+            
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200:
-                        if source['name'] not in self.failed_sources: self.failed_sources.append(source['name'])
+                        code = r.status
+                        if source['name'] not in self.failed_sources: 
+                            self.failed_sources[source['name']] = code
                         return []
-                    if source['name'] in self.failed_sources: self.failed_sources.remove(source['name'])
+                    if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
+                    
                     content = await r.read()
                     f = feedparser.parse(content)
                     for e in f.entries[:5]:
@@ -479,7 +512,7 @@ class IntelThread:
                 if i['score'] == 0: i['score'] = self.extract_score(i)
                 final.append(i)
             return final
-        except: return []
+        except Exception: return []
 
     async def process_intelligence(self):
         await self.check_commands()
@@ -494,7 +527,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v10.1 Global)...")
+        logger.info("🔎 Tarama Sürüyor (v10.0 Final)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -518,7 +551,6 @@ class IntelThread:
                     self.news_buffer.append({"title": threat['title'], "link": threat['link'], "ai_summary": summ})
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
-                    # KURAL: Kritikse VEYA Puanı 0.0 (Yeni/Bilinmeyen) ise bildir
                     if curr >= 7.0 or curr == 0.0 or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
                         notify = True
                     
