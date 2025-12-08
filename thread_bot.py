@@ -34,6 +34,9 @@ class IntelThread:
         # ChatOps Takibi
         self.last_update_id = 0
         
+        # Son tarama zamanı (Veri akışını kontrol etmek için)
+        self.last_scan_timestamp = "Henüz Başlamadı"
+        
         # Yedek Çevirmen
         self.translator = GoogleTranslator(source='auto', target='tr')
         
@@ -69,7 +72,6 @@ class IntelThread:
         self.daily_stats = self.load_json(self.daily_stats_file, set_mode=False)
         self.check_daily_reset(force_check=True)
 
-        self.pending_reports = []
         self.last_flush_time = datetime.now()
         self.last_heartbeat_date = None
 
@@ -79,12 +81,12 @@ class IntelThread:
             return self.translate_text(f"{title}\n{description}")
 
         try:
-            # Prompt: Hikaye değil, aksiyon istiyoruz.
+            # Prompt: Yönetici özeti ve net aksiyon emri
             prompt = (
                 f"Sen kıdemli bir siber güvenlik operasyon uzmanısın. Aşağıdaki veriyi analiz et.\n"
                 f"Başlık: {title}\n"
                 f"Açıklama: {description}\n\n"
-                f"Lütfen çıktıyı Türkçe olarak, Markdown formatında ama kod bloğu olmadan hazırla:\n"
+                f"Lütfen çıktıyı Türkçe olarak, Markdown formatında (kod bloğu kullanmadan) hazırla:\n"
                 f"1. **Özet:** Zafiyet nedir? (Tek cümle)\n"
                 f"2. **Etki:** Saldırgan ne elde eder?\n"
                 f"3. **Aksiyon:** Hangi sürüme güncellenmeli veya hangi ayar kapatılmalı? (Net sürüm/komut ver, tavsiye verme emir ver.)\n\n"
@@ -116,17 +118,21 @@ class IntelThread:
 
     async def handle_command(self, command):
         cmd = command.lower().strip()
+        
+        # /durum komutuna "Son Tarama Zamanı" eklendi
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
             ai_status = "✅ Gemini (Tiered Mode)" if self.model else "⚠️ Pasif"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n"
-                f"🧠 AI: {ai_status}\n"
-                f"📅 {stats.get('date')}\n"
-                f"📊 Tespit: {stats.get('total', 0)} (🛑 {stats.get('critical', 0)})\n"
-                f"📡 Kaynaklar: {len(self.sources)}"
+                f"🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
+                f"🧠 AI Motoru: {ai_status}\n"
+                f"📅 Tarih: {stats.get('date')}\n"
+                f"📊 Günlük Tespit: <b>{stats.get('total', 0)}</b> (🛑 {stats.get('critical', 0)})\n"
+                f"📡 Aktif Kaynaklar: {len(self.sources)}"
             )
             await self.send_telegram_card(msg)
+            
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
             dosya = datetime.now(tr).strftime("%m-%Y.json")
@@ -135,6 +141,7 @@ class IntelThread:
                 await self.send_telegram_file(dosya)
             else:
                 await self.send_telegram_card(f"⚠️ <b>{dosya}</b> bulunamadı.")
+                
         elif cmd == "/tara":
             await self.send_telegram_card("🚀 Manuel tarama başlatılıyor...")
 
@@ -152,6 +159,7 @@ class IntelThread:
         try:
             tr_timezone = pytz.timezone('Europe/Istanbul')
             simdi = datetime.now(tr_timezone)
+            # Ay geçişini 23:50'den sonra yeni ay olarak algıla
             sanal_zaman = simdi + timedelta(minutes=10)
             dosya_ismi = sanal_zaman.strftime("%m-%Y.json")
             item['log_zamani'] = simdi.strftime("%Y-%m-%d %H:%M:%S")
@@ -166,26 +174,15 @@ class IntelThread:
                 json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
-    # --- 6. FORMATLAMA VE ÇİFT BUTON SİSTEMİ ---
+    # --- 6. FORMATLAMA ---
     async def format_alert(self, item, is_hourly=False):
         score = item.get('score', 0)
         
-        # --- KADEMELİ ANALİZ (TIERED ANALYSIS) ---
-        use_ai = False
-        text_check = (item.get('title', '') + item.get('desc', '')).lower()
-        
-        # Kritiklik Şartları
-        if score >= 7.0: use_ai = True
-        elif item['source'] == "CISA KEV": use_ai = True
-        elif any(kw in text_check for kw in ["exploit", "zero-day", "rce", "remote code"]): use_ai = True
+        # AI Analizi: Sadece bildirim atılacaksa (Yüksek/Kritik) zaten buraya gelir.
+        # Bu yüzden burada AI'yı direkt çalıştırabiliriz çünkü filtreleme process_intelligence'da yapıldı.
+        ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''))
+        ai_output = f"🧠 <b>AI Analizi & Aksiyon:</b>\n{ai_analiz_raw}\n"
 
-        if use_ai:
-            ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''))
-            ai_output = f"🧠 <b>AI Analizi & Aksiyon:</b>\n{ai_analiz_raw}\n"
-        else:
-            tr_desc = self.translate_text(item.get('desc', ''))
-            ai_output = f"ℹ️ <b>Özet (Translate):</b>\n{tr_desc}\n"
-        
         system_name, hashtags = self.detect_os_and_tags(item['title'] + " " + item['desc'])
         severity_label, icon = self.get_severity_info(score)
         epss_str = await self.enrich_with_epss(item['id'])
@@ -208,14 +205,11 @@ class IntelThread:
         payload = {"chat_id": self.tg_chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
         
         keyboard = []
-        # Buton 1: Kaynak
         if link:
             keyboard.append({"text": "🔗 Detay / Kaynak", "url": link})
         
-        # Buton 2: Çözüm Ara (Google Search)
         if search_query:
             safe_q = search_query.replace(" ", "+")
-            # Google'da 'ID + patch + solution' araması yaptıran link
             search_url = f"https://www.google.com/search?q={safe_q}+solution+patch+advisory"
             keyboard.append({"text": "🛡️ Çözüm Ara", "url": search_url})
 
@@ -394,37 +388,41 @@ class IntelThread:
 
     async def process_intelligence(self):
         await self.check_commands()
-        logger.info("🔎 Kademeli Analiz (Tiered Analysis) Taraması Başlıyor...")
+        logger.info("🔎 Filtreli Tarama (Sadece Yüksek/Kritik Bildirimi)...")
         self.check_daily_reset()
         await self.check_heartbeat()
+        
+        # Son tarama zamanını kaydet (ChatOps kontrolü için)
+        tr_timezone = pytz.timezone('Europe/Istanbul')
+        self.last_scan_timestamp = datetime.now(tr_timezone).strftime("%H:%M:%S")
 
         all_threats = await self.fetch_all()
         for threat in all_threats:
             if threat["id"] not in self.known_ids:
                 self.known_ids.add(threat["id"])
                 
-                is_critical = self.check_is_critical(threat)
-                if is_critical and threat['score'] == 0: threat['score'] = 9.5
-                
                 self.update_daily_stats(threat)
                 self.save_json(self.memory_file, self.known_ids)
                 self.log_to_monthly_json(threat)
                 
-                if is_critical:
+                # --- BİLDİRİM FİLTRESİ (SESSİZ MOD) ---
+                score = threat.get('score', 0)
+                is_urgent = False
+                
+                # 1. Skor 7.0 ve üzeri
+                if score >= 7.0: is_urgent = True
+                # 2. CISA Listesi
+                elif threat['source'] == "CISA KEV": is_urgent = True
+                # 3. Exploit/Zero-Day Keyword
+                elif self.check_is_critical(threat): is_urgent = True
+                
+                if is_urgent:
                     msg = await self.format_alert(threat, is_hourly=False)
-                    # Çift Buton İçin Parametre Eklendi
+                    # Çift Buton ile gönder
                     await self.send_telegram_card(msg, link=threat['link'], search_query=threat['id'])
                 else:
-                    self.pending_reports.append(threat)
+                    # Düşük/Orta seviye ise sadece loga yazdık, bildirim atmıyoruz.
+                    pass 
 
-        time_diff = datetime.now() - self.last_flush_time
-        if time_diff.total_seconds() >= 3600:
-            if self.pending_reports:
-                await self.send_telegram_card(f"⏰ <b>SAATLİK ÖZET ({len(self.pending_reports)})</b>")
-                for item in self.pending_reports:
-                    msg = await self.format_alert(item, is_hourly=True)
-                    # Çift Buton İçin Parametre Eklendi
-                    await self.send_telegram_card(msg, link=item['link'], search_query=item['id'])
-                    await asyncio.sleep(1)
-                self.pending_reports = []
-            self.last_flush_time = datetime.now()
+        # Saatlik özet (pending_reports) artık kullanılmıyor, kaldırıldı.
+        self.last_flush_time = datetime.now()
