@@ -58,32 +58,44 @@ class IntelThread:
         self.news_sources_list = ["Google News Hunter", "BleepingComputer", "The Hacker News", "Dark Reading"]
         self.my_assets = ["wordpress", "fortinet", "cisco", "ubuntu", "nginx", "exchange server", "palo alto", "sql server"]
         
-        # --- 2. KAYNAKLAR ---
+        # --- 2. KAYNAKLAR (TENABLE FULL EKLENDİ) ---
         self.sources = [
-            # HABERLER
+            # --- TENABLE PLUGINLERİ (KULLANICI TALEBİ) ---
+            # En son eklenen zafiyet tarama pluginleri
+            {"name": "Tenable Plugins (New)", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"},
+            # Güncellenen pluginler (Eskalasyon ve detay değişimi için)
+            {"name": "Tenable Plugins (Updated)", "url": "https://www.tenable.com/plugins/feeds?sort=updated", "type": "feed"},
+            # Araştırma ve Blog
+            {"name": "Tenable Research", "url": "https://www.tenable.com/blog/feed", "type": "feed"},
+
+            # --- HABERLER ---
             {"name": "Google News Hunter", "url": "https://news.google.com/rss/search?q=cyber+security+vulnerability+exploit+OR+zero-day+when:1d&hl=en-US&gl=US&ceid=US:en", "type": "feed"},
             {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "type": "feed"},
             {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "type": "feed"},
             {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"},
 
-            # TEKNİK & VENDOR
-            {"name": "Tenable Research", "url": "https://www.tenable.com/blog/feed", "type": "feed"},
-            {"name": "MSRC", "url": "https://api.msrc.microsoft.com/update-guide/rss", "type": "feed"},
-            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
-            {"name": "CERT-EU", "url": "https://www.cert.europa.eu/feed/", "type": "feed"},
+            # --- TEKNİK VERİTABANLARI ---
             {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=20&pubStartDate=", "type": "json_nist"},
             {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?cveState=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
             {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
+            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
+            {"name": "CERT-EU", "url": "https://www.cert.europa.eu/feed/", "type": "feed"},
+
+            # --- VENDOR & ADVISORY ---
+            {"name": "MSRC", "url": "https://api.msrc.microsoft.com/update-guide/rss", "type": "feed"},
             {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, 
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
             {"name": "Fortinet", "url": "https://filestore.fortinet.com/fortiguard/rss/ir.xml", "type": "feed"},
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
+            
+            # --- EXPLOIT ARAŞTIRMA ---
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
         ]
         
+        # Dosya Yönetimi
         self.memory_file = "processed_intelligence.json"
         self.daily_stats_file = "daily_stats.json"
         self.news_buffer_file = "daily_news_buffer.json"
@@ -144,7 +156,6 @@ class IntelThread:
     async def handle_command(self, command):
         cmd_parts = command.strip().split()
         cmd = cmd_parts[0].lower()
-        
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
             try: m_name = self.model.model_name
@@ -159,13 +170,11 @@ class IntelThread:
                 f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
             )
             await self.send_telegram_card(msg)
-            
         elif cmd == "/debug":
             if not self.failed_sources: await self.send_telegram_card("✅ Hata yok.")
             else:
                 errs = "\n".join([f"• {k}: {v}" for k,v in self.failed_sources.items()])
                 await self.send_telegram_card(f"🔧 <b>HATA DETAYI</b>\n{errs}")
-                
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
             dosya = datetime.now(tr).strftime("%m-%Y.json")
@@ -173,7 +182,6 @@ class IntelThread:
                 await self.send_telegram_card(f"📂 <b>{dosya}</b> yükleniyor...")
                 await self.send_telegram_file(dosya)
             else: await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
-            
         elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başladı.")
         elif cmd == "/aylik": await self.send_monthly_executive_report(force=True)
         elif cmd == "/analiz": await self.handle_analysis_request(cmd_parts)
@@ -357,15 +365,12 @@ class IntelThread:
 
     # --- 9. YARDIMCI ---
     def load_json(self, filepath):
-        try: 
-            with open(filepath, 'r') as f: return json.load(f)
+        try: with open(filepath, 'r') as f: return json.load(f)
         except: return {}
-    
     def save_json(self, filepath, data):
         try:
             with open(filepath, 'w') as f: json.dump(data, f)
         except: pass
-    
     def extract_official_solution_link(self, text):
         if not text: return None
         urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
@@ -373,18 +378,15 @@ class IntelThread:
         for u in urls:
             if any(d in u for d in domains): return u
         return None
-    
     def normalize_id(self, r, l="", t=""):
         txt = f"{r} {l} {t}".upper()
         if m := re.search(r"CVE-\d{4}-\d{4,7}", txt): return m.group(0)
         if "http" in r: return r.rstrip('/').split('/')[-1][:40]
         return r[:40]
-    
     def extract_score(self, item):
         txt = (item.get('title','') + item.get('desc','')).lower()
         if m := re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", txt): return float(m.group(1))
         return 0.0
-    
     async def enrich_with_epss(self, cve):
         if not cve.startswith("CVE"): return "N/A"
         try:
@@ -456,7 +458,7 @@ class IntelThread:
 
         return (
             f"<b>{icon} {header_title}</b>\n"
-            f"⎯⎯⎯⎯⎯⎯⎯\n"
+            f"⎯⎯⎯⎯⎯⎯\n"
             f"{meta_info}\n\n"
             f"{ai_output}\n"
             f"🏷 <i>{hashtags}</i>"
@@ -470,7 +472,6 @@ class IntelThread:
             return [i for sub in results for i in sub]
 
     async def parse_generic(self, session, source, mode):
-        # YENİ EKLENTİ: HATA KORUMALI & GECİKMELİ TARAMA
         try:
             # 1. Anti-Ban Jitter (30-60 sn rastgele bekleme)
             await asyncio.sleep(random.uniform(30.0, 60.0))
@@ -478,6 +479,7 @@ class IntelThread:
             timeout = aiohttp.ClientTimeout(total=40)
             items = []
             
+            # --- JSON PARSER ---
             if "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200: 
@@ -495,6 +497,7 @@ class IntelThread:
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
             
+            # --- FEED PARSER ---
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200:
@@ -527,7 +530,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v14.5 Fix)...")
+        logger.info("🔎 Tarama Sürüyor (v16.0 Tenable Updated)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
