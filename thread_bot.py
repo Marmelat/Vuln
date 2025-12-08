@@ -5,6 +5,7 @@ import json
 import os
 import re
 import pytz
+import random # YENİ: Rastgelelik için
 import feedparser
 import google.generativeai as genai
 from datetime import datetime, timedelta, date
@@ -22,7 +23,7 @@ class IntelThread:
         self.tg_token = os.getenv("TELEGRAM_TOKEN")
         self.tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         
-        # Gemini AI (Garantili Model Seçici)
+        # Gemini AI
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.model = None
         if self.gemini_api_key:
@@ -41,12 +42,13 @@ class IntelThread:
         self.last_scan_timestamp = "Henüz Başlamadı"
         self.failed_sources = {} 
         
-        # User-Agent (Bot Korumalarını Aşmak İçin)
+        # --- ANTI-BAN HEADERS ---
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,image/webp,*/*;q=0.7",
             "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
         }
         
         self.translator = GoogleTranslator(source='auto', target='tr')
@@ -55,7 +57,7 @@ class IntelThread:
         self.news_sources_list = ["Google News Hunter", "BleepingComputer", "The Hacker News", "Dark Reading"]
         self.my_assets = ["wordpress", "fortinet", "cisco", "ubuntu", "nginx", "exchange server", "palo alto", "sql server"]
         
-        # --- 2. KAYNAKLAR (Exploit-DB Çıkarıldı) ---
+        # --- 2. KAYNAKLAR (Tenable Geri Geldi) ---
         self.sources = [
             # HABER
             {"name": "Google News Hunter", "url": "https://news.google.com/rss/search?q=cyber+security+vulnerability+exploit+OR+zero-day+when:1d&hl=en-US&gl=US&ceid=US:en", "type": "feed"},
@@ -63,12 +65,14 @@ class IntelThread:
             {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "type": "feed"},
             {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"},
 
-            # TEKNİK
+            # TEKNİK & VENDOR
+            # Tenable Plugins (XML formatı daha stabil)
+            {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds.xml?sort=newest", "type": "feed"},
+            
             {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
             {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
             {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=40&pubStartDate=", "type": "json_nist"},
             {"name": "CERT-EU", "url": "https://www.cert.europa.eu/publications/security-advisories/rss", "type": "feed"},
-            {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds.xml?sort=newest", "type": "feed"},
             {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, 
             {"name": "MSRC", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
@@ -76,6 +80,8 @@ class IntelThread:
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
             {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
+            
+            # EXPLOIT
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
@@ -107,11 +113,11 @@ class IntelThread:
                 prompt = f"Haber Özeti (Tek Cümle): {title}\n{description}"
             else:
                 prompt = (
-                    f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
+                    f"Sen kıdemli bir güvenlik uzmanısın. Aşağıdaki zafiyeti analiz et.\n"
                     f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description}\n\n"
-                    f"Çıktı Formatı (Markdown, kod bloğu yok, Emojileri kullan):\n"
+                    f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
                     f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa sil)\n"
-                    f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
+                    f"📦 **Sınıf:** [İşletim Sistemi | Web Uygulaması | Ağ/Güvenlik Cihazı | SCADA/ICS | Kütüphane/Yazılım]\n"
                     f"🎯 **Hedef Sistem:** (Ürün adı)\n"
                     f"⚡ **Teknik Özet:** (Kök neden?)\n"
                     f"💀 **Risk:** (Saldırgan ne yapar?)\n"
@@ -142,35 +148,24 @@ class IntelThread:
     async def handle_command(self, command):
         cmd_parts = command.strip().split()
         cmd = cmd_parts[0].lower()
-        
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            # Model Adı
             try: m_name = self.model.model_name
             except: m_name = "Gemini"
             ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
-            
-            # Hata Raporu
-            if self.failed_sources:
-                health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı Kaynak</b>"
-            else: health_msg = "✅ Tüm Kaynaklar Sağlıklı"
-
+            if self.failed_sources: health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
+            else: health_msg = "✅ Sağlıklı"
             msg = (
-                f"🤖 <b>SİSTEM DURUMU</b>\n"
-                f"🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
-                f"📡 <b>Kaynaklar:</b> {health_msg}\n"
-                f"🧠 <b>AI:</b> {ai_status}\n"
+                f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
+                f"📡 <b>Kaynaklar:</b> {health_msg}\n🧠 <b>AI:</b> {ai_status}\n"
                 f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
             )
             await self.send_telegram_card(msg)
-            
         elif cmd == "/debug":
-            if not self.failed_sources:
-                await self.send_telegram_card("✅ Harika! Hata veren kaynak yok.")
+            if not self.failed_sources: await self.send_telegram_card("✅ Hata yok.")
             else:
-                errs = "\n".join([f"• {k}: Kod {v}" for k,v in self.failed_sources.items()])
+                errs = "\n".join([f"• {k}: {v}" for k,v in self.failed_sources.items()])
                 await self.send_telegram_card(f"🔧 <b>HATA DETAYI</b>\n{errs}")
-
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
             dosya = datetime.now(tr).strftime("%m-%Y.json")
@@ -204,8 +199,7 @@ class IntelThread:
             end_date = end_date.replace(hour=23, minute=59, second=59)
             await self.send_telegram_card(f"📊 <b>Analiz Hazırlanıyor...</b>\n📅 {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}")
             await self.generate_custom_report(start_date, end_date)
-        except ValueError:
-            await self.send_telegram_card("⚠️ <b>Hatalı Format!</b>\nÖrn: /analiz 2025-11-01 2025-11-10")
+        except ValueError: await self.send_telegram_card("⚠️ Hatalı Format! Örn: /analiz 2025-12-01 2025-12-10")
 
     # --- 5. LOGGING ---
     def log_to_monthly_json(self, item, old_score=None):
@@ -218,16 +212,14 @@ class IntelThread:
             if old_score is not None:
                 entry['update_log'] = f"🔺 {old_score} -> {item.get('score')}"
                 entry['status'] = "ESCALATED"
-            else:
-                entry['status'] = "NEW"
+            else: entry['status'] = "NEW"
             mevcut = []
             if os.path.exists(dosya_ismi):
                 try:
                     with open(dosya_ismi, 'r', encoding='utf-8') as f: mevcut = json.load(f)
                 except: mevcut = []
             mevcut.append(entry)
-            with open(dosya_ismi, 'w', encoding='utf-8') as f:
-                json.dump(mevcut, f, ensure_ascii=False, indent=4)
+            with open(dosya_ismi, 'w', encoding='utf-8') as f: json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
     # --- 6. RAPORLAMA ---
@@ -251,19 +243,18 @@ class IntelThread:
                         for item in data:
                             try:
                                 log_time = datetime.strptime(item.get('log_time', ''), "%Y-%m-%d %H:%M:%S")
-                                if start_date <= log_time <= end_date:
-                                    filtered_data.append(item)
+                                if start_date <= log_time <= end_date: filtered_data.append(item)
                             except: pass
                 except: pass
 
         if found_files_count == 0:
-            await self.send_telegram_card("⚠️ <b>Veri Dosyası Yok!</b>\nHenüz veri birikmemiş.")
+            await self.send_telegram_card("⚠️ <b>Veri Dosyası Yok!</b>")
             return
         if not filtered_data:
-            await self.send_telegram_card("⚠️ <b>Kayıt Bulunamadı!</b>\nSeçilen tarih aralığında veri yok.")
+            await self.send_telegram_card("⚠️ <b>Kayıt Bulunamadı!</b>")
             return
 
-        await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor, lütfen bekleyin...</b>")
+        await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor...</b>")
 
         total = len(filtered_data)
         crit = sum(1 for i in filtered_data if i.get('score', 0) >= 9.0)
@@ -453,9 +444,15 @@ class IntelThread:
             return [i for sub in results for i in sub]
 
     async def parse_generic(self, session, source, mode):
+        # YENİ EKLENTİ: HATA KORUMALI & GECİKMELİ TARAMA
         try:
+            # 1. Anti-Ban Jitter (2-6 sn rastgele bekleme)
+            await asyncio.sleep(random.uniform(2.0, 6.0))
+            
             timeout = aiohttp.ClientTimeout(total=20)
             items = []
+            
+            # --- JSON PARSER ---
             if "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200: 
@@ -478,6 +475,8 @@ class IntelThread:
                                         items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST kaydı.", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": metrics[0].get("cvssData", {}).get("baseScore", 0)})
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
+            
+            # --- FEED PARSER ---
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200:
@@ -510,7 +509,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v10.1 Global)...")
+        logger.info("🔎 Tarama Sürüyor (v13.0 Anti-Ban)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -535,7 +534,8 @@ class IntelThread:
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
                     # KURAL: Kritikse VEYA Puanı 0.0 (Yeni/Bilinmeyen) ise bildir
-                    if curr >= 7.0 or curr == 0.0 or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
+                    is_technical = src not in self.news_sources_list
+                    if curr >= 7.0 or (curr == 0.0 and is_technical) or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
                         notify = True
                     
                     if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
