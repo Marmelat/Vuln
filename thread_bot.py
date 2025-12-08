@@ -11,7 +11,7 @@ import google.generativeai as genai
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
-import urllib.parse # URL Encoding için gerekli
+import urllib.parse
 
 # .env yükle
 load_dotenv()
@@ -144,23 +144,28 @@ class IntelThread:
     async def handle_command(self, command):
         cmd_parts = command.strip().split()
         cmd = cmd_parts[0].lower()
+        
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
             try: m_name = self.model.model_name
             except: m_name = "Gemini"
             ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
-            health_msg = f"⚠️ {len(self.failed_sources)} Hatalı" if self.failed_sources else "✅ Sağlıklı"
+            if self.failed_sources:
+                health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
+            else: health_msg = "✅ Sağlıklı"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
                 f"📡 <b>Kaynaklar:</b> {health_msg}\n🧠 <b>AI:</b> {ai_status}\n"
                 f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
             )
             await self.send_telegram_card(msg)
+            
         elif cmd == "/debug":
             if not self.failed_sources: await self.send_telegram_card("✅ Hata yok.")
             else:
                 errs = "\n".join([f"• {k}: {v}" for k,v in self.failed_sources.items()])
                 await self.send_telegram_card(f"🔧 <b>HATA DETAYI</b>\n{errs}")
+                
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
             dosya = datetime.now(tr).strftime("%m-%Y.json")
@@ -168,6 +173,7 @@ class IntelThread:
                 await self.send_telegram_card(f"📂 <b>{dosya}</b> yükleniyor...")
                 await self.send_telegram_file(dosya)
             else: await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
+            
         elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başladı.")
         elif cmd == "/aylik": await self.send_monthly_executive_report(force=True)
         elif cmd == "/analiz": await self.handle_analysis_request(cmd_parts)
@@ -217,7 +223,7 @@ class IntelThread:
             with open(dosya_ismi, 'w', encoding='utf-8') as f: json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
-    # --- 6. RAPORLAMA (FIXED SYNTAX & IMAGE DOWNLOADER) ---
+    # --- 6. RAPORLAMA ---
     async def generate_custom_report(self, start_date, end_date):
         target_files = set()
         curr = start_date
@@ -264,7 +270,6 @@ class IntelThread:
                 ai_comment = resp.text.strip()
             except: pass
 
-        # Grafik Oluştur
         chart_config = {
             "type": "doughnut",
             "data": {
@@ -273,39 +278,29 @@ class IntelThread:
             },
             "options": {"title": {"display": True, "text": "RAPOR", "fontColor": "#fff"}, "legend": {"labels": {"fontColor": "#fff"}}}
         }
-        
-        # URL'yi encode et (Hata önleyici)
         chart_json = json.dumps(chart_config)
         chart_url = f"https://quickchart.io/chart?c={urllib.parse.quote(chart_json)}&bkg=black&w=500&h=300"
-        
         caption = f"📊 <b>ÖZEL RAPOR</b>\n🛑 Kritik: {crit}\n📈 Eskalasyon: {escalated}\n📝 {ai_comment}"
         
-        # YENİ METOT: Resmi İndir ve Gönder (Link olarak atma, dosya olarak at)
         await self.download_and_send_photo(chart_url, caption)
 
-    # --- 7. TELEGRAM (GÜNCELLENMİŞ GÖRSEL GÖNDERİMİ) ---
+    # --- 7. TELEGRAM ---
     async def download_and_send_photo(self, image_url, caption):
-        """Resmi indirir ve Telegram'a Multipart olarak yükler (Link sorunu olmaz)"""
         if not self.tg_token: return
-        
         try:
             async with aiohttp.ClientSession() as session:
-                # 1. Resmi İndir
                 async with session.get(image_url) as resp:
                     if resp.status == 200:
                         img_data = await resp.read()
-                        
-                        # 2. Telegram'a Yükle
                         url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
                         data = aiohttp.FormData()
                         data.add_field('chat_id', self.tg_chat_id)
                         data.add_field('photo', img_data, filename='chart.png')
                         data.add_field('caption', caption)
                         data.add_field('parse_mode', 'HTML')
-                        
                         await session.post(url, data=data)
         except Exception as e:
-            logger.error(f"Grafik gönderme hatası: {e}")
+            logger.error(f"Grafik hatası: {e}")
             await self.send_telegram_card(f"{caption}\n\n(⚠️ Grafik yüklenemedi)")
 
     async def send_telegram_card(self, message, link=None, search_query=None, extra_ref=None):
@@ -336,7 +331,6 @@ class IntelThread:
         except: pass
 
     async def send_telegram_photo(self, photo_url, caption):
-        # Eski metot (Yedek) - Artık download_and_send_photo kullanılıyor
         url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
         payload = {"chat_id": self.tg_chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
         try:
@@ -363,12 +357,15 @@ class IntelThread:
 
     # --- 9. YARDIMCI ---
     def load_json(self, filepath):
-        try: with open(filepath, 'r') as f: return json.load(f)
+        try: 
+            with open(filepath, 'r') as f: return json.load(f)
         except: return {}
+    
     def save_json(self, filepath, data):
         try:
             with open(filepath, 'w') as f: json.dump(data, f)
         except: pass
+    
     def extract_official_solution_link(self, text):
         if not text: return None
         urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
@@ -376,15 +373,18 @@ class IntelThread:
         for u in urls:
             if any(d in u for d in domains): return u
         return None
+    
     def normalize_id(self, r, l="", t=""):
         txt = f"{r} {l} {t}".upper()
         if m := re.search(r"CVE-\d{4}-\d{4,7}", txt): return m.group(0)
         if "http" in r: return r.rstrip('/').split('/')[-1][:40]
         return r[:40]
+    
     def extract_score(self, item):
         txt = (item.get('title','') + item.get('desc','')).lower()
         if m := re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", txt): return float(m.group(1))
         return 0.0
+    
     async def enrich_with_epss(self, cve):
         if not cve.startswith("CVE"): return "N/A"
         try:
@@ -456,7 +456,7 @@ class IntelThread:
 
         return (
             f"<b>{icon} {header_title}</b>\n"
-            f"⎯⎯⎯⎯⎯⎯\n"
+            f"⎯⎯⎯⎯⎯⎯⎯\n"
             f"{meta_info}\n\n"
             f"{ai_output}\n"
             f"🏷 <i>{hashtags}</i>"
@@ -470,6 +470,7 @@ class IntelThread:
             return [i for sub in results for i in sub]
 
     async def parse_generic(self, session, source, mode):
+        # YENİ EKLENTİ: HATA KORUMALI & GECİKMELİ TARAMA
         try:
             # 1. Anti-Ban Jitter (30-60 sn rastgele bekleme)
             await asyncio.sleep(random.uniform(30.0, 60.0))
@@ -477,7 +478,6 @@ class IntelThread:
             timeout = aiohttp.ClientTimeout(total=40)
             items = []
             
-            # --- JSON PARSER ---
             if "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200: 
@@ -495,7 +495,6 @@ class IntelThread:
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
             
-            # --- FEED PARSER ---
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200:
