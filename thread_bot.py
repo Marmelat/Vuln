@@ -5,7 +5,7 @@ import json
 import os
 import re
 import pytz
-import random # YENİ: Rastgelelik için
+import random
 import feedparser
 import google.generativeai as genai
 from datetime import datetime, timedelta, date
@@ -44,9 +44,9 @@ class IntelThread:
         
         # --- ANTI-BAN HEADERS ---
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,image/webp,*/*;q=0.7",
-            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1"
         }
@@ -57,31 +57,36 @@ class IntelThread:
         self.news_sources_list = ["Google News Hunter", "BleepingComputer", "The Hacker News", "Dark Reading"]
         self.my_assets = ["wordpress", "fortinet", "cisco", "ubuntu", "nginx", "exchange server", "palo alto", "sql server"]
         
-        # --- 2. KAYNAKLAR (Tenable Geri Geldi) ---
+        # --- 2. KAYNAKLAR (TENABLE GÜNCELLENDİ) ---
         self.sources = [
-            # HABER
+            # --- TENABLE ÖZEL (Kullanıcı Talebi) ---
+            # Yeni çıkan pluginler
+            {"name": "Tenable Newest", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"},
+            # Güncellenen pluginler (Eskalasyon takibi için kritik)
+            {"name": "Tenable Updated", "url": "https://www.tenable.com/plugins/feeds?sort=updated", "type": "feed"},
+
+            # --- HABERLER ---
             {"name": "Google News Hunter", "url": "https://news.google.com/rss/search?q=cyber+security+vulnerability+exploit+OR+zero-day+when:1d&hl=en-US&gl=US&ceid=US:en", "type": "feed"},
             {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "type": "feed"},
             {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "type": "feed"},
             {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"},
 
-            # TEKNİK & VENDOR
-            # Tenable Plugins (XML formatı daha stabil)
-            {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds.xml?sort=newest", "type": "feed"},
-            
-            {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
+            # --- TEKNİK VERİTABANLARI ---
+            {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=20&pubStartDate=", "type": "json_nist"},
+            {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?cveState=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
             {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
-            {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=40&pubStartDate=", "type": "json_nist"},
-            {"name": "CERT-EU", "url": "https://www.cert.europa.eu/publications/security-advisories/rss", "type": "feed"},
+
+            # --- VENDOR & ADVISORY ---
+            {"name": "MSRC", "url": "https://api.msrc.microsoft.com/update-guide/rss", "type": "feed"},
+            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
+            {"name": "CERT-EU", "url": "https://www.cert.europa.eu/feed/", "type": "feed"},
             {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, 
-            {"name": "MSRC", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
             {"name": "Fortinet", "url": "https://filestore.fortinet.com/fortiguard/rss/ir.xml", "type": "feed"},
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
-            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
             
-            # EXPLOIT
+            # --- EXPLOIT ARAŞTIRMA ---
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
@@ -113,11 +118,11 @@ class IntelThread:
                 prompt = f"Haber Özeti (Tek Cümle): {title}\n{description}"
             else:
                 prompt = (
-                    f"Sen kıdemli bir güvenlik uzmanısın. Aşağıdaki zafiyeti analiz et.\n"
+                    f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
                     f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description}\n\n"
                     f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
                     f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa sil)\n"
-                    f"📦 **Sınıf:** [İşletim Sistemi | Web Uygulaması | Ağ/Güvenlik Cihazı | SCADA/ICS | Kütüphane/Yazılım]\n"
+                    f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
                     f"🎯 **Hedef Sistem:** (Ürün adı)\n"
                     f"⚡ **Teknik Özet:** (Kök neden?)\n"
                     f"💀 **Risk:** (Saldırgan ne yapar?)\n"
@@ -150,11 +155,8 @@ class IntelThread:
         cmd = cmd_parts[0].lower()
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            try: m_name = self.model.model_name
-            except: m_name = "Gemini"
-            ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
-            if self.failed_sources: health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
-            else: health_msg = "✅ Sağlıklı"
+            ai_status = "✅ Aktif" if self.model else "⚠️ Pasif"
+            health_msg = f"⚠️ {len(self.failed_sources)} Hatalı" if self.failed_sources else "✅ Sağlıklı"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
                 f"📡 <b>Kaynaklar:</b> {health_msg}\n🧠 <b>AI:</b> {ai_status}\n"
@@ -293,10 +295,7 @@ class IntelThread:
             q = search_query[:50].replace(" ", "+")
             keyboard.append({"text": "🛡️ Çözüm Ara", "url": f"https://www.google.com/search?q={q}+patch"})
         if keyboard: payload["reply_markup"] = {"inline_keyboard": [keyboard]}
-        
-        try:
-            async with aiohttp.ClientSession() as s:
-                await s.post(url, json=payload, headers=self.headers)
+        try: async with aiohttp.ClientSession() as s: await s.post(url, json=payload, headers=self.headers)
         except: pass
 
     async def send_telegram_file(self, filepath):
@@ -336,8 +335,7 @@ class IntelThread:
 
     # --- 9. YARDIMCI ---
     def load_json(self, filepath):
-        try: 
-            with open(filepath, 'r') as f: return json.load(f)
+        try: with open(filepath, 'r') as f: return json.load(f)
         except: return {}
     def save_json(self, filepath, data):
         try:
@@ -446,10 +444,11 @@ class IntelThread:
     async def parse_generic(self, session, source, mode):
         # YENİ EKLENTİ: HATA KORUMALI & GECİKMELİ TARAMA
         try:
-            # 1. Anti-Ban Jitter (2-6 sn rastgele bekleme)
-            await asyncio.sleep(random.uniform(2.0, 6.0))
+            # 1. Anti-Ban Jitter (30-60 sn rastgele bekleme)
+            # Bu, sitelerin bizi "agresif bot" olarak işaretlemesini engeller.
+            await asyncio.sleep(random.uniform(30.0, 60.0))
             
-            timeout = aiohttp.ClientTimeout(total=20)
+            timeout = aiohttp.ClientTimeout(total=40)
             items = []
             
             # --- JSON PARSER ---
@@ -464,15 +463,10 @@ class IntelThread:
                     if mode == "json_cisa":
                          items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in d.get("vulnerabilities", [])[:5]]
                     elif mode == "json_nist":
-                         yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S.000')
-                         async with session.get(f"{source['url']}{yesterday}", timeout=timeout, headers=self.headers) as r2:
-                            if r2.status == 200:
-                                d2 = await r2.json()
-                                for i in d2.get("vulnerabilities", []):
-                                    cve = i.get("cve", {})
-                                    metrics = cve.get("metrics", {}).get("cvssMetricV31", [])
-                                    if metrics and metrics[0].get("cvssData", {}).get("baseScore", 0) >= 7.0:
-                                        items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST kaydı.", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": metrics[0].get("cvssData", {}).get("baseScore", 0)})
+                         # NIST URL Zaten full
+                         for i in d.get("vulnerabilities", [])[:5]:
+                             cve = i.get("cve", {})
+                             items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST Kaydı", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": 7.5}) 
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
             
@@ -509,7 +503,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v13.0 Anti-Ban)...")
+        logger.info("🔎 Tarama Sürüyor (v14.1 Anti-Ban & Tenable Fix)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -533,7 +527,6 @@ class IntelThread:
                     self.news_buffer.append({"title": threat['title'], "link": threat['link'], "ai_summary": summ})
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
-                    # KURAL: Kritikse VEYA Puanı 0.0 (Yeni/Bilinmeyen) ise bildir
                     is_technical = src not in self.news_sources_list
                     if curr >= 7.0 or (curr == 0.0 and is_technical) or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
                         notify = True
