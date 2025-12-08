@@ -22,7 +22,7 @@ class IntelThread:
         self.tg_token = os.getenv("TELEGRAM_TOKEN")
         self.tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         
-        # Gemini AI
+        # Gemini AI (Garantili Model Seçici)
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.model = None
         if self.gemini_api_key:
@@ -39,21 +39,14 @@ class IntelThread:
 
         self.last_update_id = 0
         self.last_scan_timestamp = "Henüz Başlamadı"
-        self.failed_sources = {} # Hataları detaylı tutmak için dict yaptık {source: error_code}
+        self.failed_sources = {} 
         
-        # --- HAYALET MODU (STEALTH HEADERS) ---
-        # Bu başlıklar sayesinde siteler bizi gerçek Chrome tarayıcısı sanar.
+        # User-Agent (Bot Korumalarını Aşmak İçin)
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1"
+            "Connection": "keep-alive"
         }
         
         self.translator = GoogleTranslator(source='auto', target='tr')
@@ -62,37 +55,28 @@ class IntelThread:
         self.news_sources_list = ["Google News Hunter", "BleepingComputer", "The Hacker News", "Dark Reading"]
         self.my_assets = ["wordpress", "fortinet", "cisco", "ubuntu", "nginx", "exchange server", "palo alto", "sql server"]
         
-        # --- 2. GÜNCELLENMİŞ KAYNAKLAR (2025 READY) ---
+        # --- 2. KAYNAKLAR (Exploit-DB Çıkarıldı) ---
         self.sources = [
-            # HABERLER (RSS)
+            # HABER
             {"name": "Google News Hunter", "url": "https://news.google.com/rss/search?q=cyber+security+vulnerability+exploit+OR+zero-day+when:1d&hl=en-US&gl=US&ceid=US:en", "type": "feed"},
             {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "type": "feed"},
             {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "type": "feed"},
-            {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"}, # Yeni Eklendi
+            {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"},
 
-            # TEKNİK VERİTABANLARI (JSON/API)
-            {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
-            # CVE.org API (Bazen yavaşlar ama en güveniliri)
+            # TEKNİK
             {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
-            # NIST NVD (API Key istiyor olabilir, yedeğe aldık)
+            {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
             {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=40&pubStartDate=", "type": "json_nist"},
-
-            # VENDOR & SECURITY FEEDS (RSS)
-            # Tenable URL Düzeltildi (FeedBurner veya XML)
+            {"name": "CERT-EU", "url": "https://www.cert.europa.eu/publications/security-advisories/rss", "type": "feed"},
             {"name": "Tenable Plugins", "url": "https://www.tenable.com/plugins/feeds.xml?sort=newest", "type": "feed"},
             {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, 
-            {"name": "MSRC (Microsoft)", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
+            {"name": "MSRC", "url": "https://msrc.microsoft.com/blog/feed/", "type": "feed"},
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
-            # Fortinet URL Güncellendi
-            {"name": "Fortinet", "url": "https://pub.kb.fortinet.com/rss/firmware.xml", "type": "feed"}, 
+            {"name": "Fortinet", "url": "https://filestore.fortinet.com/fortiguard/rss/ir.xml", "type": "feed"},
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
             {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
-            
-            # EXPLOIT & ZERO DAY (RSS)
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
-            {"name": "Exploit-DB", "url": "https://www.exploit-db.com/rss.xml", "type": "feed"},
-            # PacketStorm URL Düzeltildi
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
         ]
@@ -125,7 +109,7 @@ class IntelThread:
                 prompt = (
                     f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
                     f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description}\n\n"
-                    f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
+                    f"Çıktı Formatı (Markdown, kod bloğu yok, Emojileri kullan):\n"
                     f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa sil)\n"
                     f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
                     f"🎯 **Hedef Sistem:** (Ürün adı)\n"
@@ -138,7 +122,7 @@ class IntelThread:
             return response.text.strip()
         except: return self.translate_text(f"{title}\n{description}")[:200]
 
-    # --- 4. CHATOPS (DEBUG MODU EKLENDİ) ---
+    # --- 4. CHATOPS ---
     async def check_commands(self):
         if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/getUpdates"
@@ -161,22 +145,31 @@ class IntelThread:
         
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            ai_status = "✅ Aktif" if self.model else "⚠️ Pasif"
-            health_msg = f"⚠️ {len(self.failed_sources)} Hatalı" if self.failed_sources else "✅ Sağlıklı"
+            # Model Adı
+            try: m_name = self.model.model_name
+            except: m_name = "Gemini"
+            ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
+            
+            # Hata Raporu
+            if self.failed_sources:
+                health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı Kaynak</b>"
+            else: health_msg = "✅ Tüm Kaynaklar Sağlıklı"
+
             msg = (
-                f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
-                f"📡 <b>Kaynaklar:</b> {health_msg}\n🧠 <b>AI:</b> {ai_status}\n"
+                f"🤖 <b>SİSTEM DURUMU</b>\n"
+                f"🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
+                f"📡 <b>Kaynaklar:</b> {health_msg}\n"
+                f"🧠 <b>AI:</b> {ai_status}\n"
                 f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
             )
             await self.send_telegram_card(msg)
             
-        # DETAYLI HATA RAPORU İÇİN YENİ KOMUT
         elif cmd == "/debug":
             if not self.failed_sources:
-                await self.send_telegram_card("✅ Harika! Şu an hiçbir kaynakta hata yok.")
+                await self.send_telegram_card("✅ Harika! Hata veren kaynak yok.")
             else:
-                error_list = "\n".join([f"• <b>{k}:</b> {v}" for k, v in self.failed_sources.items()])
-                await self.send_telegram_card(f"🔧 <b>KAYNAK HATA RAPORU</b>\n{error_list}")
+                errs = "\n".join([f"• {k}: Kod {v}" for k,v in self.failed_sources.items()])
+                await self.send_telegram_card(f"🔧 <b>HATA DETAYI</b>\n{errs}")
 
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
@@ -463,18 +456,12 @@ class IntelThread:
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             items = []
-            
-            # --- USER-AGENT İLE İSTEK ---
             if "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
-                    # Hata Kontrolü
-                    if r.status != 200:
-                        code = r.status
-                        if source['name'] not in self.failed_sources: 
-                            self.failed_sources[source['name']] = code # Dict olarak kaydet
+                    if r.status != 200: 
+                        if source['name'] not in self.failed_sources: self.failed_sources[source['name']] = r.status
                         return []
                     if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
-                    
                     d = await r.json()
                     
                     if mode == "json_cisa":
@@ -491,16 +478,12 @@ class IntelThread:
                                         items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST kaydı.", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": metrics[0].get("cvssData", {}).get("baseScore", 0)})
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
-            
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200:
-                        code = r.status
-                        if source['name'] not in self.failed_sources: 
-                            self.failed_sources[source['name']] = code
+                        if source['name'] not in self.failed_sources: self.failed_sources[source['name']] = r.status
                         return []
                     if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
-                    
                     content = await r.read()
                     f = feedparser.parse(content)
                     for e in f.entries[:5]:
@@ -512,7 +495,7 @@ class IntelThread:
                 if i['score'] == 0: i['score'] = self.extract_score(i)
                 final.append(i)
             return final
-        except Exception: return []
+        except: return []
 
     async def process_intelligence(self):
         await self.check_commands()
@@ -527,7 +510,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v10.0 Final)...")
+        logger.info("🔎 Tarama Sürüyor (v10.1 Global)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -551,6 +534,7 @@ class IntelThread:
                     self.news_buffer.append({"title": threat['title'], "link": threat['link'], "ai_summary": summ})
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
+                    # KURAL: Kritikse VEYA Puanı 0.0 (Yeni/Bilinmeyen) ise bildir
                     if curr >= 7.0 or curr == 0.0 or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
                         notify = True
                     
