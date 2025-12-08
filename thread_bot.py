@@ -67,8 +67,6 @@ class IntelThread:
             {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"},
 
             # TEKNİK & VENDOR
-            {"name": "Tenable Plugins (New)", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"},
-            {"name": "Tenable Plugins (Upd)", "url": "https://www.tenable.com/plugins/feeds?sort=updated", "type": "feed"},
             {"name": "Tenable Research", "url": "https://www.tenable.com/blog/feed", "type": "feed"},
             {"name": "MSRC", "url": "https://api.msrc.microsoft.com/update-guide/rss", "type": "feed"},
             {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
@@ -103,16 +101,16 @@ class IntelThread:
         self.last_news_report_date = None
         self.last_monthly_report_date = None
 
-    # --- 3. GEMINI AI (SMART CHUNKING ENGINE) ---
+    # --- 3. GEMINI AI ---
     async def ask_gemini(self, title, description, source_name, is_news=False):
         if not self.model: return self.translate_text(f"{title}\n{description}")
         try:
             if is_news:
-                prompt = f"Haber Özeti (Tek Cümle): {title}\n{description[:2000]}"
+                prompt = f"Haber Özeti (Tek Cümle): {title}\n{description}"
             else:
                 prompt = (
                     f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
-                    f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description[:2000]}\n\n"
+                    f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description}\n\n"
                     f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
                     f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa sil)\n"
                     f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
@@ -124,44 +122,7 @@ class IntelThread:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, self.model.generate_content, prompt)
             return response.text.strip()
-        except: return self.translate_text(f"{title}\n{description}")[:300] + "..."
-
-    # YENİ FONKSİYON: BÜYÜK VERİ PARÇALAMA VE ANALİZİ
-    async def analyze_large_dataset(self, data_list):
-        """Veriyi parçalar (Chunking), özetler ve birleştirir."""
-        if not self.model or not data_list: return "Veri analizi yapılamadı."
-
-        # Sadece Kritik/Yüksek olanları al
-        important_items = [i for i in data_list if i.get('score', 0) >= 7.0 or i.get('status') == "ESCALATED"]
-        
-        if not important_items: return "Bu dönemde kritik seviyede bir tehdit tespit edilmemiştir."
-
-        # 15'erli gruplara böl (Chunking)
-        chunk_size = 15
-        chunks = [important_items[i:i + chunk_size] for i in range(0, len(important_items), chunk_size)]
-        
-        batch_summaries = []
-        
-        # Her parçayı analiz et
-        for batch in chunks:
-            batch_text = "\n".join([f"- {item.get('title')} (Skor: {item.get('score')})" for item in batch])
-            prompt = f"Aşağıdaki zafiyet listesindeki ana trendleri ve en kritik riskleri 2 cümleyle özetle:\n{batch_text}"
-            try:
-                resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, prompt)
-                batch_summaries.append(resp.text.strip())
-            except: pass
-            
-        # Sonuçları Birleştir
-        final_context = "\n".join(batch_summaries)
-        final_prompt = (
-            f"Aşağıda bir ayın zafiyet analiz parçaları var. Bunları birleştirip CISO için tek bir 'Yönetici Özeti' paragrafı yaz.\n"
-            f"Profesyonel, net ve korkutucu olmayan bir dil kullan.\n\nVERİLER:\n{final_context}"
-        )
-        
-        try:
-            final_resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, final_prompt)
-            return final_resp.text.strip()
-        except: return "Özet oluşturulurken AI hatası oluştu."
+        except: return self.translate_text(f"{title}\n{description}")[:200]
 
     # --- 4. CHATOPS ---
     async def check_commands(self):
@@ -183,13 +144,13 @@ class IntelThread:
     async def handle_command(self, command):
         cmd_parts = command.strip().split()
         cmd = cmd_parts[0].lower()
+        
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
             try: m_name = self.model.model_name
             except: m_name = "Gemini"
             ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
-            if self.failed_sources: health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
-            else: health_msg = "✅ Sağlıklı"
+            health_msg = f"⚠️ {len(self.failed_sources)} Hatalı" if self.failed_sources else "✅ Sağlıklı"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
                 f"📡 <b>Kaynaklar:</b> {health_msg}\n🧠 <b>AI:</b> {ai_status}\n"
@@ -257,7 +218,7 @@ class IntelThread:
             with open(dosya_ismi, 'w', encoding='utf-8') as f: json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
-    # --- 6. RAPORLAMA (CHUNKING DESTEKLİ) ---
+    # --- 6. RAPORLAMA ---
     async def generate_custom_report(self, start_date, end_date):
         target_files = set()
         curr = start_date
@@ -289,31 +250,32 @@ class IntelThread:
             await self.send_telegram_card("⚠️ <b>Kayıt Bulunamadı!</b>")
             return
 
-        await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor (AI Analizi)...</b>")
+        await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor...</b>")
 
-        # İstatistikler
+        total = len(filtered_data)
         crit = sum(1 for i in filtered_data if i.get('score', 0) >= 9.0)
         high = sum(1 for i in filtered_data if 7.0 <= i.get('score', 0) < 9.0)
         escalated = sum(1 for i in filtered_data if i.get('status') == "ESCALATED")
         
-        # YENİ: CHUNKING İLE ANALİZ (Parçala ve Yönet)
-        ai_comment = await self.analyze_large_dataset(filtered_data)
+        ai_comment = "Veri analizi yapılamadı."
+        if self.model:
+            prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {total}, Kritik: {crit}, Yükselen: {escalated}"
+            try:
+                resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, prompt)
+                ai_comment = resp.text.strip()
+            except: pass
 
-        # GRAFİK (MODERN)
         chart_config = {
             "type": "doughnut",
             "data": {
-                "labels": ["KRITIK", "YUKSEK", "YUKSELEN"],
-                "datasets": [{"data": [crit, high, escalated], "backgroundColor": ["#E74C3C", "#F39C12", "#9B59B6"]}]
+                "labels": ["Kritik", "Yüksek", "Diğer", "Yükselen"],
+                "datasets": [{"data": [crit, high, total-(crit+high), escalated], "backgroundColor": ["#FF0000", "#FF8C00", "#36A2EB", "#9932CC"]}]
             },
-            "options": {
-                "title": {"display": True, "text": f"RAPOR: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}", "fontColor": "#fff"},
-                "legend": {"labels": {"fontColor": "#fff"}}
-            }
+            "options": {"title": {"display": True, "text": "RAPOR", "fontColor": "#fff"}, "legend": {"labels": {"fontColor": "#fff"}}}
         }
         chart_json = json.dumps(chart_config)
-        chart_url = f"https://quickchart.io/chart?c={urllib.parse.quote(chart_json)}&bkg=transparent&w=500&h=300"
-        caption = f"📊 <b>ÖZEL GÜVENLİK RAPORU</b>\n🛑 Kritik: {crit}\n🟠 Yüksek: {high}\n📈 Eskalasyon: {escalated}\n\n📝 <b>AI Analizi:</b>\n<i>{ai_comment}</i>"
+        chart_url = f"https://quickchart.io/chart?c={urllib.parse.quote(chart_json)}&bkg=black&w=500&h=300"
+        caption = f"📊 <b>ÖZEL RAPOR</b>\n🛑 Kritik: {crit}\n📈 Eskalasyon: {escalated}\n📝 {ai_comment}"
         
         await self.download_and_send_photo(chart_url, caption)
 
@@ -333,6 +295,7 @@ class IntelThread:
                         data.add_field('parse_mode', 'HTML')
                         await session.post(url, data=data)
         except Exception as e:
+            logger.error(f"Grafik hatası: {e}")
             await self.send_telegram_card(f"{caption}\n\n(⚠️ Grafik yüklenemedi)")
 
     async def send_telegram_card(self, message, link=None, search_query=None, extra_ref=None):
@@ -389,12 +352,15 @@ class IntelThread:
 
     # --- 9. YARDIMCI ---
     def load_json(self, filepath):
-        try: with open(filepath, 'r') as f: return json.load(f)
+        try: 
+            with open(filepath, 'r') as f: return json.load(f)
         except: return {}
+    
     def save_json(self, filepath, data):
         try:
             with open(filepath, 'w') as f: json.dump(data, f)
         except: pass
+    
     def extract_official_solution_link(self, text):
         if not text: return None
         urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
@@ -402,15 +368,18 @@ class IntelThread:
         for u in urls:
             if any(d in u for d in domains): return u
         return None
+    
     def normalize_id(self, r, l="", t=""):
         txt = f"{r} {l} {t}".upper()
         if m := re.search(r"CVE-\d{4}-\d{4,7}", txt): return m.group(0)
         if "http" in r: return r.rstrip('/').split('/')[-1][:40]
         return r[:40]
+    
     def extract_score(self, item):
         txt = (item.get('title','') + item.get('desc','')).lower()
         if m := re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", txt): return float(m.group(1))
         return 0.0
+    
     async def enrich_with_epss(self, cve):
         if not cve.startswith("CVE"): return "N/A"
         try:
@@ -504,6 +473,7 @@ class IntelThread:
     async def parse_generic(self, session, source, mode):
         # YENİ: HATA KORUMALI & GECİKMELİ TARAMA
         try:
+            # 1. Anti-Ban Jitter (30-60 sn rastgele bekleme)
             await asyncio.sleep(random.uniform(30.0, 60.0))
             
             timeout = aiohttp.ClientTimeout(total=40)
@@ -558,7 +528,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v18.0 Chunking)...")
+        logger.info("🔎 Tarama Sürüyor (v14.5 Fix)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
