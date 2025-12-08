@@ -82,19 +82,21 @@ class IntelThread:
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
+            
+            # TENABLE PLUGINLERİ (Kullanıcı İsteği)
+            {"name": "Tenable Plugins (New)", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"},
+            {"name": "Tenable Plugins (Upd)", "url": "https://www.tenable.com/plugins/feeds?sort=updated", "type": "feed"},
         ]
         
         self.memory_file = "processed_intelligence.json"
         self.daily_stats_file = "daily_stats.json"
         self.news_buffer_file = "daily_news_buffer.json"
         
-        self.known_ids = self.load_json(self.memory_file)
-        self.daily_stats = self.load_json(self.daily_stats_file)
-        self.news_buffer = self.load_json(self.news_buffer_file)
-        if not isinstance(self.news_buffer, list): self.news_buffer = []
-        if not isinstance(self.daily_stats, dict) or "date" not in self.daily_stats:
-            self.daily_stats = {"date": str(date.today()), "total": 0, "critical": 0, "items": []}
-            
+        # GÜVENLİ YÜKLEME (Auto-Repair)
+        self.known_ids = self.load_json_safe(self.memory_file)
+        self.daily_stats = self.load_json_safe(self.daily_stats_file)
+        self.news_buffer = self.load_json_safe(self.news_buffer_file, is_list=True)
+        
         self.check_daily_reset(force_check=True)
         self.last_flush_time = datetime.now()
         self.last_heartbeat_date = None
@@ -144,13 +146,13 @@ class IntelThread:
     async def handle_command(self, command):
         cmd_parts = command.strip().split()
         cmd = cmd_parts[0].lower()
-        
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
             try: m_name = self.model.model_name
             except: m_name = "Gemini"
             ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
-            health_msg = f"⚠️ {len(self.failed_sources)} Hatalı" if self.failed_sources else "✅ Sağlıklı"
+            if self.failed_sources: health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
+            else: health_msg = "✅ Sağlıklı"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
                 f"📡 <b>Kaynaklar:</b> {health_msg}\n🧠 <b>AI:</b> {ai_status}\n"
@@ -259,7 +261,11 @@ class IntelThread:
         
         ai_comment = "Veri analizi yapılamadı."
         if self.model:
-            prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {total}, Kritik: {crit}, Yükselen: {escalated}"
+            # Akıllı Özetleme: Sadece en önemli 10 taneyi gönder
+            top_risks = sorted(filtered_data, key=lambda x: x.get('score', 0), reverse=True)[:10]
+            summary_text = "\n".join([f"- {i.get('title')} ({i.get('score')})" for i in top_risks])
+            
+            prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {total}, Kritik: {crit}, Yükselen: {escalated}\n\nÖrnek Tehditler:\n{summary_text}"
             try:
                 resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, prompt)
                 ai_comment = resp.text.strip()
@@ -351,10 +357,24 @@ class IntelThread:
         self.last_news_report_date = today
 
     # --- 9. YARDIMCI ---
-    def load_json(self, filepath):
-        try: 
-            with open(filepath, 'r') as f: return json.load(f)
-        except: return {}
+    def load_json_safe(self, filepath, is_list=False):
+        """GÜVENLİ YÜKLEME: Hata veya tip uyuşmazlığı varsa onarır"""
+        default = [] if is_list else {}
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                    # TİP KONTROLÜ
+                    if is_list:
+                        if isinstance(data, list): return data
+                        else: return default # Yanlış tipse sıfırla
+                    else:
+                        if isinstance(data, dict): return data
+                        elif isinstance(data, list): # Eski listeyi sözlüğe çevir (Migration)
+                            return {k: 0 for k in data}
+                        else: return default
+            except: return default
+        return default
     
     def save_json(self, filepath, data):
         try:
@@ -443,7 +463,6 @@ class IntelThread:
         
         ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''), source_name, is_news=False)
         
-        # Fallback
         if "Model" in ai_analiz_raw or "Pasif" in ai_analiz_raw:
              manual_class = "📦 **Sınıf:** Genel Zafiyet (AI Pasif)\n"
              ai_output = f"{manual_class}{ai_analiz_raw}\n"
@@ -471,9 +490,7 @@ class IntelThread:
             return [i for sub in results for i in sub]
 
     async def parse_generic(self, session, source, mode):
-        # YENİ: HATA KORUMALI & GECİKMELİ TARAMA
         try:
-            # 1. Anti-Ban Jitter (30-60 sn rastgele bekleme)
             await asyncio.sleep(random.uniform(30.0, 60.0))
             
             timeout = aiohttp.ClientTimeout(total=40)
@@ -528,7 +545,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v14.5 Fix)...")
+        logger.info("🔎 Tarama Sürüyor (v15.0 Fix)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
