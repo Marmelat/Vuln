@@ -24,15 +24,18 @@ class IntelThread:
         
         # Gemini AI
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.model = None
         if self.gemini_api_key:
             genai.configure(api_key=self.gemini_api_key)
-            try: self.model = genai.GenerativeModel('gemini-1.5-flash')
-            except: 
-                try: self.model = genai.GenerativeModel('gemini-1.5-pro')
-                except: self.model = genai.GenerativeModel('gemini-pro')
-        else:
-            logger.warning("⚠️ GEMINI_API_KEY eksik! Standart çeviri modu aktif.")
-            self.model = None
+            models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro']
+            for m in models_to_try:
+                try:
+                    genai.GenerativeModel(m) 
+                    self.model = genai.GenerativeModel(m)
+                    break
+                except: continue
+        
+        if not self.model: logger.warning("⚠️ AI Pasif (Standart Mod)")
 
         self.last_update_id = 0
         self.last_scan_timestamp = "Henüz Başlamadı"
@@ -113,7 +116,7 @@ class IntelThread:
             return response.text.strip()
         except: return self.translate_text(f"{title}\n{description}")[:200]
 
-    # --- 4. CHATOPS (GELİŞMİŞ RAPORLAMA EKLENDİ) ---
+    # --- 4. CHATOPS ---
     async def check_commands(self):
         if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/getUpdates"
@@ -134,7 +137,6 @@ class IntelThread:
         cmd_parts = command.strip().split()
         cmd = cmd_parts[0].lower()
         
-        # 1. SİSTEM DURUMU
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
             ai_status = "✅ Aktif" if self.model else "⚠️ Pasif"
@@ -145,8 +147,6 @@ class IntelThread:
                 f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
             )
             await self.send_telegram_card(msg)
-            
-        # 2. DOSYA İNDİRME
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
             dosya = datetime.now(tr).strftime("%m-%Y.json")
@@ -154,58 +154,41 @@ class IntelThread:
                 await self.send_telegram_card(f"📂 <b>{dosya}</b> yükleniyor...")
                 await self.send_telegram_file(dosya)
             else: await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
-            
-        # 3. MANUEL TARAMA
         elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başladı.")
-        
-        # 4. ÖZEL ANALİZ / GRAFİK (YENİ ÖZELLİK)
-        elif cmd == "/analiz":
-            await self.handle_analysis_request(cmd_parts)
+        elif cmd == "/aylik": await self.send_monthly_executive_report(force=True)
+        elif cmd == "/analiz": await self.handle_analysis_request(cmd_parts)
 
     async def handle_analysis_request(self, parts):
-        """
-        Kullanım:
-        /analiz -> Bu ay başından bugüne
-        /analiz 2025-11 -> Belirli bir ay
-        /analiz 2025-11-01 2025-11-15 -> Tarih aralığı
-        """
         tr = pytz.timezone('Europe/Istanbul')
         today = datetime.now(tr)
-        
         start_date = None
         end_date = None
-        
         try:
-            if len(parts) == 1: # Sadece /analiz
+            if len(parts) == 1:
                 start_date = today.replace(day=1)
                 end_date = today
-            elif len(parts) == 2: # /analiz 2025-11
+            elif len(parts) == 2:
                 dt = datetime.strptime(parts[1], "%Y-%m")
                 start_date = dt
-                # Ayın son gününü bul
                 next_month = dt.replace(day=28) + timedelta(days=4)
                 end_date = next_month - timedelta(days=next_month.day)
-            elif len(parts) == 3: # /analiz YYYY-MM-DD YYYY-MM-DD
+            elif len(parts) == 3:
                 start_date = datetime.strptime(parts[1], "%Y-%m-%d")
                 end_date = datetime.strptime(parts[2], "%Y-%m-%d")
-                
-            # Saat ayarı (Gün sonuna kadar kapsasın)
+            
             start_date = start_date.replace(hour=0, minute=0, second=0)
             end_date = end_date.replace(hour=23, minute=59, second=59)
-            
             await self.send_telegram_card(f"📊 <b>Analiz Hazırlanıyor...</b>\n📅 {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}")
             await self.generate_custom_report(start_date, end_date)
-            
         except ValueError:
-            await self.send_telegram_card("⚠️ <b>Hatalı Tarih Formatı!</b>\nÖrnekler:\n• <code>/analiz</code> (Bu ay)\n• <code>/analiz 2025-11</code> (Ay bazlı)\n• <code>/analiz 2025-11-01 2025-11-10</code> (Aralık)")
+            await self.send_telegram_card("⚠️ <b>Hatalı Format!</b>\nÖrn: /analiz 2025-11-01 2025-11-10")
 
-    # --- 5. GELİŞMİŞ LOGLAMA ---
+    # --- 5. LOGGING ---
     def log_to_monthly_json(self, item, old_score=None):
         try:
             tr = pytz.timezone('Europe/Istanbul')
             simdi = datetime.now(tr)
             dosya_ismi = (simdi + timedelta(minutes=10)).strftime("%m-%Y.json")
-            
             entry = item.copy()
             entry['log_time'] = simdi.strftime("%Y-%m-%d %H:%M:%S")
             if old_score is not None:
@@ -213,7 +196,6 @@ class IntelThread:
                 entry['status'] = "ESCALATED"
             else:
                 entry['status'] = "NEW"
-
             mevcut = []
             if os.path.exists(dosya_ismi):
                 try:
@@ -224,21 +206,16 @@ class IntelThread:
                 json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
-    # --- 6. RAPORLAMA MOTORU (AYLIK & ÖZEL) ---
+    # --- 6. RAPORLAMA ---
     async def generate_custom_report(self, start_date, end_date):
-        """Tarih aralığına göre verileri toplar ve raporlar"""
-        
-        # Hangi dosyaları okuyacağımızı bulalım (Örn: 11-2025.json, 12-2025.json)
         target_files = set()
         curr = start_date
         while curr <= end_date:
             fname = curr.strftime("%m-%Y.json")
             target_files.add(fname)
-            # Bir sonraki aya geç
             if curr.month == 12: curr = curr.replace(year=curr.year+1, month=1, day=1)
             else: curr = curr.replace(month=curr.month+1, day=1)
         
-        # Verileri topla ve filtrele
         filtered_data = []
         for f_name in target_files:
             if os.path.exists(f_name):
@@ -246,7 +223,6 @@ class IntelThread:
                     with open(f_name, 'r') as f:
                         data = json.load(f)
                         for item in data:
-                            # Log zamanına göre filtrele
                             try:
                                 log_time = datetime.strptime(item.get('log_time', ''), "%Y-%m-%d %H:%M:%S")
                                 if start_date <= log_time <= end_date:
@@ -255,56 +231,35 @@ class IntelThread:
                 except: pass
 
         if not filtered_data:
-            await self.send_telegram_card("⚠️ Belirtilen tarih aralığında kayıt bulunamadı.")
+            await self.send_telegram_card("⚠️ Kayıt bulunamadı.")
             return
 
-        # İstatistik Çıkar
         total = len(filtered_data)
         crit = sum(1 for i in filtered_data if i.get('score', 0) >= 9.0)
         high = sum(1 for i in filtered_data if 7.0 <= i.get('score', 0) < 9.0)
         escalated = sum(1 for i in filtered_data if i.get('status') == "ESCALATED")
         
-        # AI Yorumu
         ai_comment = "Veri analizi yapılamadı."
         if self.model:
-            prompt = (
-                f"Siber Güvenlik Raporu Özeti Yaz.\n"
-                f"Tarih Aralığı: {start_date.date()} - {end_date.date()}\n"
-                f"Toplam: {total}, Kritik: {crit}, Yüksek: {high}, Yükselen Tehdit: {escalated}\n"
-                f"Lütfen bu verileri yöneticiye sunulacak profesyonel ve kısa bir paragraf halinde yorumla."
-            )
+            prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {total}, Kritik: {crit}, Yükselen: {escalated}"
             try:
                 resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, prompt)
                 ai_comment = resp.text.strip()
             except: pass
 
-        # Grafik
         chart_config = {
             "type": "doughnut",
             "data": {
                 "labels": ["Kritik", "Yüksek", "Diğer", "Yükselen"],
                 "datasets": [{"data": [crit, high, total-(crit+high), escalated], "backgroundColor": ["#FF0000", "#FF8C00", "#36A2EB", "#9932CC"]}]
             },
-            "options": {
-                "title": {"display": True, "text": f"RAPOR: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}", "fontColor": "#fff"},
-                "legend": {"labels": {"fontColor": "#fff"}}
-            }
+            "options": {"title": {"display": True, "text": "RAPOR", "fontColor": "#fff"}, "legend": {"labels": {"fontColor": "#fff"}}}
         }
         chart_url = f"https://quickchart.io/chart?c={json.dumps(chart_config)}&bkg=black&w=500&h=300"
-        
-        caption = (
-            f"📊 <b>ÖZEL GÜVENLİK RAPORU</b>\n"
-            f"🗓 <b>Aralık:</b> {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n"
-            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-            f"🛑 <b>Kritik:</b> {crit}\n"
-            f"🟠 <b>Yüksek:</b> {high}\n"
-            f"📈 <b>Eskalasyon:</b> {escalated}\n"
-            f"∑ <b>Toplam İşlem:</b> {total}\n\n"
-            f"📝 <b>Analiz Notu:</b>\n<i>{ai_comment}</i>"
-        )
+        caption = f"📊 <b>ÖZEL RAPOR</b>\n🛑 Kritik: {crit}\n📈 Eskalasyon: {escalated}\n📝 {ai_comment}"
         await self.send_telegram_photo(chart_url, caption)
 
-    # --- 7. TELEGRAM ARAÇLARI ---
+    # --- 7. TELEGRAM ---
     async def send_telegram_card(self, message, link=None, search_query=None, extra_ref=None):
         if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
@@ -316,7 +271,10 @@ class IntelThread:
             q = search_query[:50].replace(" ", "+")
             keyboard.append({"text": "🛡️ Çözüm Ara", "url": f"https://www.google.com/search?q={q}+patch"})
         if keyboard: payload["reply_markup"] = {"inline_keyboard": [keyboard]}
-        try: async with aiohttp.ClientSession() as s: await s.post(url, json=payload, headers=self.headers)
+        
+        try:
+            async with aiohttp.ClientSession() as s:
+                await s.post(url, json=payload, headers=self.headers)
         except: pass
 
     async def send_telegram_file(self, filepath):
@@ -324,21 +282,25 @@ class IntelThread:
         data = aiohttp.FormData()
         data.add_field('chat_id', self.tg_chat_id)
         data.add_field('document', open(filepath, 'rb'), filename=os.path.basename(filepath))
-        try: async with aiohttp.ClientSession() as s: await s.post(url, data=data)
+        try:
+            async with aiohttp.ClientSession() as s:
+                await s.post(url, data=data)
         except: pass
 
     async def send_telegram_photo(self, photo_url, caption):
         url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
         payload = {"chat_id": self.tg_chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
-        try: async with aiohttp.ClientSession() as s: await s.post(url, json=payload, headers=self.headers)
+        try:
+            async with aiohttp.ClientSession() as s:
+                await s.post(url, json=payload, headers=self.headers)
         except: pass
 
-    # --- 8. GÜNLÜK HABER BÜLTENİ ---
+    # --- 8. HABER BÜLTENİ ---
     async def send_daily_news_digest(self, force=False):
         today = str(date.today())
         if self.last_news_report_date == today and not force: return
         if not self.news_buffer: return
-        report = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n📅 <i>{today} | Gün Sonu</i>\n⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
+        report = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n📅 <i>{today}</i>\n⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
         for news in self.news_buffer:
             entry = f"🔹 <a href='{news['link']}'>{news['title']}</a>\n└ <i>{news['ai_summary']}</i>\n\n"
             if len(report) + len(entry) > 4000:
@@ -350,9 +312,9 @@ class IntelThread:
         self.save_json(self.news_buffer_file, [])
         self.last_news_report_date = today
 
-    # --- 9. TEMEL FONKSİYONLAR ---
+    # --- 9. YARDIMCI ---
     def load_json(self, filepath):
-        try: 
+        try:
             with open(filepath, 'r') as f: return json.load(f)
         except: return {}
     def save_json(self, filepath, data):
@@ -418,17 +380,30 @@ class IntelThread:
             await self.send_telegram_card("🤖 <b>GÜNLÜK KONTROL</b>\n✅ Sistem Aktif")
             self.last_heartbeat_date = today
 
-    # --- 10. AYLIK OTOMATİK RAPOR (PLANLI) ---
-    async def send_monthly_executive_report(self):
-        # Bu fonksiyon ayın son pazartesisi otomatik çalışır
-        # Yukarıdaki generate_custom_report mantığını kullanır
+    async def send_monthly_executive_report(self, force=False):
         today = date.today()
-        start = today.replace(day=1)
-        start = datetime.combine(start, datetime.min.time())
-        end = datetime.combine(today, datetime.max.time())
-        await self.generate_custom_report(start, end)
+        # Ayın son Pazartesisi mi?
+        next_monday = today + timedelta(days=7)
+        is_last_monday = (today.weekday() == 0 and next_monday.month != today.month)
+        
+        if not force:
+            if not is_last_monday: return
+            if str(today) == self.last_monthly_report_date: return
 
-    # --- PROCESS ---
+        tr = pytz.timezone('Europe/Istanbul')
+        start = datetime(today.year, today.month, 1, tzinfo=tr)
+        # Ayın son günü (yaklaşık)
+        end = start + timedelta(days=32)
+        end = end.replace(day=1) - timedelta(seconds=1)
+        
+        # remove tzinfo for comparison with naive log_time if needed, or handle timezone aware
+        start = start.replace(tzinfo=None)
+        end = end.replace(tzinfo=None)
+
+        await self.generate_custom_report(start, end)
+        self.last_monthly_report_date = str(today)
+
+    # --- ANA DÖNGÜ ---
     async def fetch_all(self):
         async with aiohttp.ClientSession() as s:
             tasks = [self.parse_generic(s, src, src["type"]) for src in self.sources]
@@ -436,49 +411,46 @@ class IntelThread:
             return [i for sub in results for i in sub]
 
     async def parse_generic(self, session, source, mode):
-        # ... (Öncekiyle aynı, yer kaplamasın diye kısalttım, aynı şekilde kalabilir) ...
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             items = []
             if "json" in mode:
-                async with session.get(source["url"], timeout=timeout, headers=self.headers) as response:
-                    if response.status != 200:
+                async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
+                    if r.status != 200: 
                         if source['name'] not in self.failed_sources: self.failed_sources.append(source['name'])
                         return []
                     if source['name'] in self.failed_sources: self.failed_sources.remove(source['name'])
-                    data = await response.json()
+                    d = await r.json()
                     
                     if mode == "json_cisa":
-                         items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in data.get("vulnerabilities", [])[:5]]
+                         items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in d.get("vulnerabilities", [])[:5]]
                     elif mode == "json_nist":
                          yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S.000')
-                         async with session.get(f"{source['url']}{yesterday}", timeout=timeout, headers=self.headers) as r:
-                            if r.status == 200:
-                                d = await r.json()
-                                for i in d.get("vulnerabilities", []):
+                         async with session.get(f"{source['url']}{yesterday}", timeout=timeout, headers=self.headers) as r2:
+                            if r2.status == 200:
+                                d2 = await r2.json()
+                                for i in d2.get("vulnerabilities", []):
                                     cve = i.get("cve", {})
                                     metrics = cve.get("metrics", {}).get("cvssMetricV31", [])
                                     if metrics and metrics[0].get("cvssData", {}).get("baseScore", 0) >= 7.0:
                                         items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST kaydı.", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": metrics[0].get("cvssData", {}).get("baseScore", 0)})
                     elif mode == "json_cveorg":
-                         items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await response.json()).get("cve_ids", [])[:10]]
+                         items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
             elif mode == "feed":
-                async with session.get(source["url"], timeout=timeout, headers=self.headers) as response:
-                    if response.status != 200:
+                async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
+                    if r.status != 200:
                         if source['name'] not in self.failed_sources: self.failed_sources.append(source['name'])
                         return []
                     if source['name'] in self.failed_sources: self.failed_sources.remove(source['name'])
-                    content = await response.read()
-                    feed = feedparser.parse(content)
-                    for entry in feed.entries[:5]:
-                        items.append({"raw_id": entry.get('link', ''), "title": entry.get('title', 'Başlık Yok'), "desc": (entry.get('summary') or entry.get('description') or "")[:500], "link": entry.get('link', ''), "score": 0})
-            final_items = []
+                    f = feedparser.parse(await r.read())
+                    for e in f.entries[:5]: items.append({"raw_id": e.link, "title": e.title, "desc": e.get('summary',''), "link": e.link, "score": 0})
+            final = []
             for i in items:
                 i['id'] = self.normalize_id(i["raw_id"], i["link"], i["title"])
                 i['source'] = source['name']
                 if i['score'] == 0: i['score'] = self.extract_score(i)
-                final_items.append(i)
-            return final_items
+                final.append(i)
+            return final
         except: return []
 
     async def process_intelligence(self):
@@ -488,17 +460,13 @@ class IntelThread:
         simdi = datetime.now(tr)
         self.last_scan_timestamp = simdi.strftime("%H:%M:%S")
         
-        # Zamanlayıcılar
         if simdi.hour == 18 and self.last_news_report_date != str(date.today()):
             await self.send_daily_news_digest()
-        
-        # Ayın son pazartesisi raporu
-        next_monday = date.today() + timedelta(days=7)
-        is_last_monday = (date.today().weekday() == 0 and next_monday.month != date.today().month)
-        if is_last_monday and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
+            
+        if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v9.5 On-Demand)...")
+        logger.info("🔎 Tarama Sürüyor (v9.6)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -515,15 +483,16 @@ class IntelThread:
             if prev is None:
                 self.known_ids[tid] = curr
                 self.update_daily_stats(threat)
-                self.log_to_monthly_json(threat)
+                self.log_to_monthly_json(threat) 
                 
                 if is_news: 
                     summ = await self.ask_gemini(threat.get('title',''), threat.get('desc',''), src, True)
                     self.news_buffer.append({"title": threat['title'], "link": threat['link'], "ai_summary": summ})
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
-                    if curr >= 7.0 or threat['source']=="CISA KEV" or self.check_is_critical(threat): notify = True
-                    if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
+                    if curr >= 7.0 or threat['source']=="CISA KEV" or any(x in (threat['title']+threat['desc']).lower() for x in ["exploit","zero-day"]): 
+                        notify = True
+                        if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
 
             elif not is_news and curr >= 7.0 and prev < 7.0:
                 is_upd = True
