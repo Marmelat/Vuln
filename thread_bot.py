@@ -22,7 +22,7 @@ class IntelThread:
         self.tg_token = os.getenv("TELEGRAM_TOKEN")
         self.tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         
-        # Gemini AI (Robust Selector)
+        # Gemini AI
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.model = None
         if self.gemini_api_key:
@@ -47,7 +47,15 @@ class IntelThread:
         self.translator = GoogleTranslator(source='auto', target='tr')
         
         # --- LİSTELER ---
-        self.news_sources_list = ["Google News Hunter", "BleepingComputer", "The Hacker News", "Dark Reading"]
+        # Bu kaynaklar "Haber" niteliğindedir, teknik analiz yapılmaz, bültene eklenir.
+        self.news_sources_list = [
+            "Google News Hunter", 
+            "BleepingComputer", 
+            "The Hacker News", 
+            "Dark Reading"
+        ]
+
+        # Envanter
         self.my_assets = ["wordpress", "fortinet", "cisco", "ubuntu", "nginx", "exchange server", "palo alto", "sql server"]
         
         # --- 2. KAYNAKLAR ---
@@ -57,6 +65,7 @@ class IntelThread:
             {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "type": "feed"},
             {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "type": "feed"},
             # TEKNİK
+            {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
             {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
             {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=40&pubStartDate=", "type": "json_nist"},
@@ -69,7 +78,6 @@ class IntelThread:
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
             {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
-            {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "Exploit-DB", "url": "https://www.exploit-db.com/rss.xml", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
@@ -93,22 +101,23 @@ class IntelThread:
         self.last_news_report_date = None
         self.last_monthly_report_date = None
 
-    # --- 3. GEMINI AI ---
+    # --- 3. GEMINI AI (SINIFLANDIRMA ODAKLI) ---
     async def ask_gemini(self, title, description, source_name, is_news=False):
         if not self.model: return self.translate_text(f"{title}\n{description}")
         try:
             if is_news:
                 prompt = f"Haber Özeti (Tek Cümle): {title}\n{description}"
             else:
+                # EVRENSEL TEKNİK ANALİZ PROMPTU
                 prompt = (
-                    f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
+                    f"Sen kıdemli bir siber güvenlik uzmanısın. Aşağıdaki teknik veriyi analiz et.\n"
                     f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description}\n\n"
-                    f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
-                    f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa sil)\n"
-                    f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
-                    f"🎯 **Hedef Sistem:** (Ürün adı)\n"
+                    f"Çıktı Formatı (Markdown, kod bloğu yok, Emojileri kullan):\n"
+                    f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa bu satırı sil)\n"
+                    f"📦 **Sınıf:** [İşletim Sistemi | Web Uygulaması | Ağ/Güvenlik Cihazı | SCADA/ICS | Yazılım | Diğer]\n"
+                    f"🎯 **Hedef Sistem:** (Ürün/Marka Adı. Örn: Windows, WordPress, Siemens)\n"
                     f"⚡ **Teknik Özet:** (Kök neden?)\n"
-                    f"💀 **Risk:** (Saldırgan ne yapar?)\n"
+                    f"💀 **Risk:** (Saldırgan ne yapabilir?)\n"
                     f"🛡️ **Aksiyon:** (Sürüm ver, emir kipi kullan)"
                 )
             loop = asyncio.get_event_loop()
@@ -136,10 +145,11 @@ class IntelThread:
     async def handle_command(self, command):
         cmd_parts = command.strip().split()
         cmd = cmd_parts[0].lower()
-        
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            ai_status = "✅ Aktif" if self.model else "⚠️ Pasif"
+            try: model_name = self.model.model_name
+            except: model_name = "Gemini"
+            ai_status = f"✅ Aktif ({model_name})" if self.model else "⚠️ Pasif"
             health_msg = f"⚠️ {len(self.failed_sources)} Hatalı" if self.failed_sources else "✅ Sağlıklı"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
@@ -154,7 +164,7 @@ class IntelThread:
                 await self.send_telegram_card(f"📂 <b>{dosya}</b> yükleniyor...")
                 await self.send_telegram_file(dosya)
             else: await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
-        elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başladı.")
+        elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başlatılıyor...")
         elif cmd == "/aylik": await self.send_monthly_executive_report(force=True)
         elif cmd == "/analiz": await self.handle_analysis_request(cmd_parts)
 
@@ -331,10 +341,15 @@ class IntelThread:
     def normalize_id(self, r, l="", t=""):
         txt = f"{r} {l} {t}".upper()
         if m := re.search(r"CVE-\d{4}-\d{4,7}", txt): return m.group(0)
+        if m := re.search(r"GHSA-[a-zA-Z0-9-]{10,}", txt): return m.group(0)
+        if m := re.search(r"ZDI-\d{2}-\d{3,}", txt): return m.group(0)
         if "http" in r: return r.rstrip('/').split('/')[-1][:40]
         return r[:40]
     def extract_score(self, item):
         txt = (item.get('title','') + item.get('desc','')).lower()
+        # 1. Regex: "Score 7.8" (ZDI gibi)
+        if m := re.search(r"score\s+([0-9]{1,2}\.?[0-9]?)", txt): return float(m.group(1))
+        # 2. Regex: "CVSS: 7.8"
         if m := re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", txt): return float(m.group(1))
         return 0.0
     async def enrich_with_epss(self, cve):
@@ -382,44 +397,33 @@ class IntelThread:
 
     async def send_monthly_executive_report(self, force=False):
         today = date.today()
-        # Ayın son Pazartesisi mi?
         next_monday = today + timedelta(days=7)
         is_last_monday = (today.weekday() == 0 and next_monday.month != today.month)
-        
         if not force:
             if not is_last_monday: return
             if str(today) == self.last_monthly_report_date: return
-
         tr = pytz.timezone('Europe/Istanbul')
-        start = datetime(today.year, today.month, 1, tzinfo=tr)
-        end = start + timedelta(days=32)
-        end = end.replace(day=1) - timedelta(seconds=1)
-        
-        start = start.replace(tzinfo=None)
-        end = end.replace(tzinfo=None)
-
+        start = datetime(today.year, today.month, 1, tzinfo=tr).replace(tzinfo=None)
+        end = (start + timedelta(days=32)).replace(day=1) - timedelta(seconds=1)
         await self.generate_custom_report(start, end)
         self.last_monthly_report_date = str(today)
 
-    # --- FORMATLAMA (DÜZELTİLDİ) ---
+    # --- FORMATLAMA ---
     async def format_alert_technical(self, item, header_title="ACİL UYARI"):
         score = item.get('score', 0)
         source_name = item.get('source', '')
         
-        # Teknik modda analiz iste
         ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''), source_name, is_news=False)
         ai_output = f"{ai_analiz_raw}\n"
         
-        # Hashtag
         _, hashtags = self.detect_os_and_tags(item['title'] + " " + item['desc'])
-        
         epss_str = await self.enrich_with_epss(item['id'])
         icon = "🛑" if score >= 9 else "🟠"
         meta_info = f"🆔 <b>{item['id']}</b>\n📊 <b>CVSS:</b> {score} | <b>EPSS:</b> {epss_str}\n📂 {source_name}"
 
         return (
             f"<b>{icon} {header_title}</b>\n"
-            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+            f"⎯⎯⎯⎯⎯⎯⎯⎯\n"
             f"{meta_info}\n\n"
             f"{ai_output}\n"
             f"🏷 <i>{hashtags}</i>"
@@ -484,14 +488,13 @@ class IntelThread:
         simdi = datetime.now(tr)
         self.last_scan_timestamp = simdi.strftime("%H:%M:%S")
         
-        # Zamanlayıcılar
         if simdi.hour == 18 and self.last_news_report_date != str(date.today()):
             await self.send_daily_news_digest()
             
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v9.7 Final)...")
+        logger.info("🔎 Tarama Sürüyor (v10.1 Global)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -515,9 +518,11 @@ class IntelThread:
                     self.news_buffer.append({"title": threat['title'], "link": threat['link'], "ai_summary": summ})
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
-                    if curr >= 7.0 or threat['source']=="CISA KEV" or any(x in (threat['title']+threat['desc']).lower() for x in ["exploit","zero-day"]): 
+                    # KURAL: Kritikse VEYA Puanı 0.0 (Yeni/Bilinmeyen) ise bildir
+                    if curr >= 7.0 or curr == 0.0 or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
                         notify = True
-                        if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
+                    
+                    if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
 
             elif not is_news and curr >= 7.0 and prev < 7.0:
                 is_upd = True
