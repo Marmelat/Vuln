@@ -22,7 +22,7 @@ class IntelThread:
         self.tg_token = os.getenv("TELEGRAM_TOKEN")
         self.tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         
-        # Gemini AI
+        # Gemini AI (Robust Selector)
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.model = None
         if self.gemini_api_key:
@@ -300,7 +300,7 @@ class IntelThread:
         today = str(date.today())
         if self.last_news_report_date == today and not force: return
         if not self.news_buffer: return
-        report = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n📅 <i>{today}</i>\n⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
+        report = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n📅 <i>{today} | Gün Sonu</i>\n⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
         for news in self.news_buffer:
             entry = f"🔹 <a href='{news['link']}'>{news['title']}</a>\n└ <i>{news['ai_summary']}</i>\n\n"
             if len(report) + len(entry) > 4000:
@@ -314,7 +314,7 @@ class IntelThread:
 
     # --- 9. YARDIMCI ---
     def load_json(self, filepath):
-        try:
+        try: 
             with open(filepath, 'r') as f: return json.load(f)
         except: return {}
     def save_json(self, filepath, data):
@@ -392,16 +392,38 @@ class IntelThread:
 
         tr = pytz.timezone('Europe/Istanbul')
         start = datetime(today.year, today.month, 1, tzinfo=tr)
-        # Ayın son günü (yaklaşık)
         end = start + timedelta(days=32)
         end = end.replace(day=1) - timedelta(seconds=1)
         
-        # remove tzinfo for comparison with naive log_time if needed, or handle timezone aware
         start = start.replace(tzinfo=None)
         end = end.replace(tzinfo=None)
 
         await self.generate_custom_report(start, end)
         self.last_monthly_report_date = str(today)
+
+    # --- FORMATLAMA (DÜZELTİLDİ) ---
+    async def format_alert_technical(self, item, header_title="ACİL UYARI"):
+        score = item.get('score', 0)
+        source_name = item.get('source', '')
+        
+        # Teknik modda analiz iste
+        ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''), source_name, is_news=False)
+        ai_output = f"{ai_analiz_raw}\n"
+        
+        # Hashtag
+        _, hashtags = self.detect_os_and_tags(item['title'] + " " + item['desc'])
+        
+        epss_str = await self.enrich_with_epss(item['id'])
+        icon = "🛑" if score >= 9 else "🟠"
+        meta_info = f"🆔 <b>{item['id']}</b>\n📊 <b>CVSS:</b> {score} | <b>EPSS:</b> {epss_str}\n📂 {source_name}"
+
+        return (
+            f"<b>{icon} {header_title}</b>\n"
+            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+            f"{meta_info}\n\n"
+            f"{ai_output}\n"
+            f"🏷 <i>{hashtags}</i>"
+        )
 
     # --- ANA DÖNGÜ ---
     async def fetch_all(self):
@@ -442,8 +464,10 @@ class IntelThread:
                         if source['name'] not in self.failed_sources: self.failed_sources.append(source['name'])
                         return []
                     if source['name'] in self.failed_sources: self.failed_sources.remove(source['name'])
-                    f = feedparser.parse(await r.read())
-                    for e in f.entries[:5]: items.append({"raw_id": e.link, "title": e.title, "desc": e.get('summary',''), "link": e.link, "score": 0})
+                    content = await r.read()
+                    f = feedparser.parse(content)
+                    for e in f.entries[:5]:
+                        items.append({"raw_id": e.link, "title": e.title, "desc": e.get('summary',''), "link": e.link, "score": 0})
             final = []
             for i in items:
                 i['id'] = self.normalize_id(i["raw_id"], i["link"], i["title"])
@@ -460,13 +484,14 @@ class IntelThread:
         simdi = datetime.now(tr)
         self.last_scan_timestamp = simdi.strftime("%H:%M:%S")
         
+        # Zamanlayıcılar
         if simdi.hour == 18 and self.last_news_report_date != str(date.today()):
             await self.send_daily_news_digest()
             
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v9.6)...")
+        logger.info("🔎 Tarama Sürüyor (v9.7 Final)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
