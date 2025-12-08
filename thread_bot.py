@@ -22,23 +22,45 @@ class IntelThread:
         self.tg_token = os.getenv("TELEGRAM_TOKEN")
         self.tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         
-        # Gemini AI
+        # --- GEMINI AI MODEL SEÇİCİ (GARANTİLİ YÖNTEM) ---
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.model = None
+        
         if self.gemini_api_key:
             genai.configure(api_key=self.gemini_api_key)
-            try: self.model = genai.GenerativeModel('gemini-1.5-flash')
-            except: 
-                try: self.model = genai.GenerativeModel('gemini-1.5-pro')
-                except: self.model = genai.GenerativeModel('gemini-pro')
+            
+            # Denenecek Modeller Listesi (En yeni -> En eski)
+            # Kod sırayla dener, ilk çalışanı seçer.
+            candidate_models = [
+                'gemini-1.5-flash',
+                'gemini-1.5-flash-latest',
+                'gemini-1.5-pro',
+                'gemini-1.5-pro-latest',
+                'gemini-1.0-pro',
+                'gemini-pro'
+            ]
+            
+            for m in candidate_models:
+                try:
+                    # Modeli test amaçlı tanımla
+                    test_model = genai.GenerativeModel(m)
+                    self.model = test_model
+                    logger.info(f"✅ AI Modeli Aktif: {m}")
+                    break # Çalıştıysa döngüden çık
+                except Exception:
+                    continue # Hata verdiyse sıradakine geç
+            
+            if not self.model:
+                logger.warning("⚠️ Hiçbir AI modeli yüklenemedi! Standart çeviri modu aktif.")
         else:
             logger.warning("⚠️ GEMINI_API_KEY eksik! Standart çeviri modu aktif.")
-            self.model = None
 
+        # Durum Takibi
         self.last_update_id = 0
         self.last_scan_timestamp = "Henüz Başlamadı"
         self.failed_sources = []
         
-        # User-Agent
+        # User-Agent (Bot Korumalarını Aşmak İçin)
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -54,17 +76,20 @@ class IntelThread:
             "Dark Reading"
         ]
 
-        # Envanter (Şimdilik boş olsa bile kod yapısı hazır dursun)
-        self.my_assets = [] 
+        # Envanter (Senin Varlıkların - Boş olsa bile hata vermez)
+        self.my_assets = [
+            "wordpress", "fortinet", "cisco", "ubuntu", 
+            "nginx", "exchange server", "palo alto", "sql server"
+        ]
         
         # --- 2. KAYNAKLAR ---
         self.sources = [
-            # HABER (Bülten Modu)
+            # HABER (Bülten Modu - 18:00'de Gider)
             {"name": "Google News Hunter", "url": "https://news.google.com/rss/search?q=cyber+security+vulnerability+exploit+OR+zero-day+when:1d&hl=en-US&gl=US&ceid=US:en", "type": "feed"},
             {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "type": "feed"},
             {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "type": "feed"},
 
-            # TEKNİK (Anlık Mod)
+            # TEKNİK (Anlık Bildirim Modu)
             {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?state=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
             {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
             {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=40&pubStartDate=", "type": "json_nist"},
@@ -86,7 +111,7 @@ class IntelThread:
         # Dosya Yolları
         self.memory_file = "processed_intelligence.json"
         self.daily_stats_file = "daily_stats.json"
-        self.news_buffer_file = "daily_news_buffer.json" 
+        self.news_buffer_file = "daily_news_buffer.json"
         
         # Yüklemeler
         self.known_ids = self.load_json(self.memory_file)
@@ -159,9 +184,12 @@ class IntelThread:
         cmd = command.lower().strip()
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
+            # Model ismini almaya çalış
             try: model_name = self.model.model_name
             except: model_name = "Gemini"
+            
             ai_status = f"✅ Aktif ({model_name})" if self.model else "⚠️ Pasif"
+            
             if self.failed_sources:
                 health_msg = f"⚠️ <b>{len(self.failed_sources)} Kaynak Hatalı:</b>\n" + ", ".join(self.failed_sources[:3])
             else: health_msg = "✅ Tüm Kaynaklar Sağlıklı"
@@ -234,7 +262,7 @@ class IntelThread:
 
         return (
             f"<b>{icon} {header_title}</b>\n"
-            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
             f"{meta_info}\n\n"
             f"{ai_output}\n"
             f"🏷 <i>{hashtags}</i>"
@@ -274,7 +302,7 @@ class IntelThread:
 
         report_msg = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n"
         report_msg += f"📅 <i>{today_str} | Gün Sonu Raporu</i>\n"
-        report_msg += f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
+        report_msg += f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
 
         for idx, news in enumerate(self.news_buffer):
             entry = f"🔹 <a href='{news['link']}'>{news['title']}</a>\n"
