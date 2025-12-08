@@ -26,8 +26,10 @@ class IntelThread:
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         if self.gemini_api_key:
             genai.configure(api_key=self.gemini_api_key)
-            try: self.model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            except: self.model = genai.GenerativeModel('gemini-pro')
+            try: self.model = genai.GenerativeModel('gemini-1.5-flash')
+            except: 
+                try: self.model = genai.GenerativeModel('gemini-1.5-pro')
+                except: self.model = genai.GenerativeModel('gemini-pro')
         else:
             logger.warning("⚠️ GEMINI_API_KEY eksik! Standart çeviri modu aktif.")
             self.model = None
@@ -45,7 +47,6 @@ class IntelThread:
         self.translator = GoogleTranslator(source='auto', target='tr')
         
         # --- AYIRT EDİCİ LİSTELER ---
-        # Bu kaynaklar ANLIK bildirilmez, 18:00'de toplu sunulur.
         self.news_sources_list = [
             "Google News Hunter", 
             "BleepingComputer", 
@@ -53,11 +54,8 @@ class IntelThread:
             "Dark Reading"
         ]
 
-        # Envanter
-        self.my_assets = [
-            "wordpress", "fortinet", "cisco", "ubuntu", 
-            "nginx", "exchange server", "palo alto", "sql server"
-        ]
+        # Envanter (Şimdilik boş olsa bile kod yapısı hazır dursun)
+        self.my_assets = [] 
         
         # --- 2. KAYNAKLAR ---
         self.sources = [
@@ -88,12 +86,12 @@ class IntelThread:
         # Dosya Yolları
         self.memory_file = "processed_intelligence.json"
         self.daily_stats_file = "daily_stats.json"
-        self.news_buffer_file = "daily_news_buffer.json" # YENİ: Haber Kumbarası
+        self.news_buffer_file = "daily_news_buffer.json" 
         
         # Yüklemeler
         self.known_ids = self.load_json(self.memory_file)
         self.daily_stats = self.load_json(self.daily_stats_file)
-        self.news_buffer = self.load_json(self.news_buffer_file) # List olarak yükle
+        self.news_buffer = self.load_json(self.news_buffer_file)
         if not isinstance(self.news_buffer, list): self.news_buffer = []
 
         if not isinstance(self.daily_stats, dict) or "date" not in self.daily_stats:
@@ -102,15 +100,15 @@ class IntelThread:
         self.check_daily_reset(force_check=True)
         self.last_flush_time = datetime.now()
         self.last_heartbeat_date = None
-        self.last_news_report_date = None # Haber bülteni bugün atıldı mı?
+        self.last_news_report_date = None
 
-    # --- 3. GEMINI AI ---
+    # --- 3. GEMINI AI (SINIFLANDIRMA EKLENDİ) ---
     async def ask_gemini(self, title, description, source_name, is_news=False):
         if not self.model: return self.translate_text(f"{title}\n{description}")
 
         try:
             if is_news:
-                # BÜLTEN İÇİN KISA ÖZET (18:00 Raporu için)
+                # BÜLTEN İÇİN KISA ÖZET
                 prompt = (
                     f"Aşağıdaki siber güvenlik haberini analiz et.\n"
                     f"Başlık: {title}\n"
@@ -118,15 +116,16 @@ class IntelThread:
                     f"Lütfen çıktıyı Türkçe olarak TEK BİR CÜMLE ile özetle. Haber neyden bahsediyor? (Markdown kullanma)."
                 )
             else:
-                # TEKNİK ANALİZ (Anlık Bildirim)
+                # TEKNİK ZAFİYET ANALİZİ (SINIFLANDIRMA + AKSIYON)
                 prompt = (
-                    f"Sen kıdemli bir güvenlik uzmanısın. Aşağıdaki zafiyeti analiz et.\n"
+                    f"Sen kıdemli bir güvenlik uzmanısın. Aşağıdaki zafiyeti analiz et ve sınıflandır.\n"
                     f"Kaynak: {source_name}\n"
                     f"Başlık: {title}\n"
                     f"Detay: {description}\n\n"
                     f"Lütfen çıktıyı Türkçe, Markdown formatında (kod bloğu olmadan) şu başlıklarla ver:\n"
-                    f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Sadece metinde 'moved', 'deprecated' varsa yaz)\n"
-                    f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
+                    f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Sadece metinde 'moved', 'deprecated' uyarısı varsa buraya yaz, yoksa bu satırı sil)\n"
+                    f"📦 **Sınıf:** [İşletim Sistemi | Web Uygulaması | Ağ/Güvenlik Cihazı | Yazılım Kütüphanesi | Diğer]\n"
+                    f"🎯 **Hedef Sistem:** (Etkilenen ürün nedir? Örn: Windows Server, WordPress, FortiGate)\n"
                     f"⚡ **Teknik Özet:** Zafiyetin kök nedeni nedir?\n"
                     f"💀 **Risk:** Saldırgan ne yapabilir?\n"
                     f"🛡️ **Aksiyon:** Hangi sürüme güncellenmeli? (Emir kipi kullan)\n"
@@ -160,7 +159,9 @@ class IntelThread:
         cmd = command.lower().strip()
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            ai_status = "✅ Gemini (Pro)" if self.model else "⚠️ Pasif"
+            try: model_name = self.model.model_name
+            except: model_name = "Gemini"
+            ai_status = f"✅ Aktif ({model_name})" if self.model else "⚠️ Pasif"
             if self.failed_sources:
                 health_msg = f"⚠️ <b>{len(self.failed_sources)} Kaynak Hatalı:</b>\n" + ", ".join(self.failed_sources[:3])
             else: health_msg = "✅ Tüm Kaynaklar Sağlıklı"
@@ -184,7 +185,7 @@ class IntelThread:
                 await self.send_telegram_card(f"⚠️ <b>{dosya}</b> bulunamadı.")
         elif cmd == "/tara":
             await self.send_telegram_card("🚀 Tarama başlatılıyor...")
-        elif cmd == "/bulten": # Manuel bülten tetikleme (Test için)
+        elif cmd == "/bulten": 
             await self.send_daily_news_digest(force=True)
 
     async def send_telegram_file(self, filepath):
@@ -215,16 +216,18 @@ class IntelThread:
                 json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
-    # --- 6. FORMATLAMA (TEKNİK) ---
+    # --- 6. FORMATLAMA (TEKNİK ZAFİYET) ---
     async def format_alert_technical(self, item, header_title="ACİL UYARI"):
         score = item.get('score', 0)
         source_name = item.get('source', '')
         
-        # Teknik zafiyet için detaylı analiz iste
+        # Teknik modda analiz iste
         ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''), source_name, is_news=False)
         ai_output = f"{ai_analiz_raw}\n"
         
+        # Hashtag (Yedek)
         _, hashtags = self.detect_os_and_tags(item['title'] + " " + item['desc'])
+        
         epss_str = await self.enrich_with_epss(item['id'])
         icon = "🛑" if score >= 9 else "🟠"
         meta_info = f"🆔 <b>{item['id']}</b>\n📊 <b>CVSS:</b> {score} | <b>EPSS:</b> {epss_str}\n📂 {source_name}"
@@ -259,44 +262,35 @@ class IntelThread:
             try: await session.post(url, json=payload, headers=self.headers)
             except: pass
 
-    # --- 7. HABER BÜLTENİ FONKSİYONU (YENİ) ---
+    # --- 7. HABER BÜLTENİ FONKSİYONU (18:00) ---
     async def send_daily_news_digest(self, force=False):
-        # Bugünün tarihi
         today_str = str(date.today())
         
-        # Eğer bugün zaten rapor attıysak ve zorlama yoksa çık
         if self.last_news_report_date == today_str and not force:
             return
 
         if not self.news_buffer:
-            return # Haber yoksa atma
+            return 
 
-        # Bülteni Oluştur
         report_msg = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n"
-        report_msg += f"📅 <i>{today_str} | 18:00 Raporu</i>\n"
+        report_msg += f"📅 <i>{today_str} | Gün Sonu Raporu</i>\n"
         report_msg += f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
 
         for idx, news in enumerate(self.news_buffer):
-            # Çok uzun mesaj hatası almamak için her 10 haberde bir böl veya sınırlı tut
-            # Basitlik için ilk 10 haberi alalım veya mesajı bölelim.
-            # Burada tek mesaja sığdırmaya çalışacağız.
-            
             entry = f"🔹 <a href='{news['link']}'>{news['title']}</a>\n"
             entry += f"└ <i>{news['ai_summary']}</i>\n\n"
             
-            # Telegram 4096 karakter limiti var. Kontrol et.
             if len(report_msg) + len(entry) > 4000:
                 await self.send_telegram_card(report_msg)
-                report_msg = "" # Sıfırla
+                report_msg = ""
             
             report_msg += entry
 
         if report_msg:
             await self.send_telegram_card(report_msg)
 
-        # Temizlik
         self.news_buffer = []
-        self.save_json(self.news_buffer_file, []) # Dosyayı temizle
+        self.save_json(self.news_buffer_file, [])
         self.last_news_report_date = today_str
         logger.info("✅ Günlük haber bülteni gönderildi.")
 
@@ -306,7 +300,7 @@ class IntelThread:
             try:
                 with open(filepath, 'r') as f: return json.load(f)
             except: pass
-        return {} # Dict veya List dönebilir kullanım yerine göre
+        return {} 
 
     def save_json(self, filepath, data):
         try:
@@ -345,8 +339,7 @@ class IntelThread:
         now = datetime.now()
         today_str = str(date.today())
         if self.last_heartbeat_date != today_str and 9 <= now.hour < 10:
-            ai_stat = "Akıllı (Gemini)" if self.model else "Standart"
-            await self.send_telegram_card(f"🤖 <b>GÜNLÜK KONTROL</b>\n✅ Sistem: Aktif\n🧠 Mod: {ai_stat}")
+            await self.send_telegram_card(f"🤖 <b>GÜNLÜK KONTROL</b>\n✅ Sistem: Aktif")
             self.last_heartbeat_date = today_str
 
     def check_daily_reset(self, force_check=False):
@@ -387,6 +380,14 @@ class IntelThread:
         try: return self.translator.translate(text[:450])
         except: return text
 
+    async def send_telegram_photo(self, photo_url, caption):
+        if not self.tg_token: return
+        url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
+        payload = {"chat_id": self.tg_chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
+        async with aiohttp.ClientSession() as session:
+            try: await session.post(url, json=payload, headers=self.headers)
+            except: pass
+
     async def send_daily_summary_report(self):
         stats = self.daily_stats
         if stats["total"] == 0: return
@@ -403,6 +404,7 @@ class IntelThread:
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             items = []
+            
             if "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as response:
                     if response.status != 200:
@@ -455,72 +457,64 @@ class IntelThread:
     async def process_intelligence(self):
         await self.check_commands()
         
-        # --- ZAMAN KONTROLLERİ ---
         tr_timezone = pytz.timezone('Europe/Istanbul')
         simdi = datetime.now(tr_timezone)
         self.last_scan_timestamp = simdi.strftime("%H:%M:%S")
         
-        # 18:00 RAPORU KONTROLÜ
+        # 18:00 BÜLTEN KONTROLÜ
         if simdi.hour == 18 and self.last_news_report_date != str(date.today()):
             await self.send_daily_news_digest()
 
-        logger.info("🔎 Kademeli Analiz + Haber Bülteni Modu...")
+        logger.info("🔎 Kademeli Analiz (Dual Mode) Çalışıyor...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
         all_threats = await self.fetch_all()
         for threat in all_threats:
+            
             threat_id = threat["id"]
             current_score = threat.get('score', 0)
             previous_score = self.known_ids.get(threat_id)
             source_name = threat.get('source', '')
             
-            # Haber Kaynağı mı?
             is_news_source = source_name in self.news_sources_list
-            
             should_notify = False
             is_update = False
             
-            # 1. YENİ VERİ GELDİ
             if previous_score is None:
                 self.known_ids[threat_id] = current_score
                 self.update_daily_stats(threat)
                 self.log_to_monthly_json(threat)
                 
-                # --- AYRIM NOKTASI ---
+                # HABER İSE -> KUMBARAYA AT (Bildirim YOK)
                 if is_news_source:
-                    # HABER ise: Bildirim atma! Kumbaraya at.
-                    # Önce AI özetini çıkar, sonra kaydet.
                     ai_summary = await self.ask_gemini(threat.get('title',''), threat.get('desc',''), source_name, is_news=True)
-                    
                     news_item = {
                         "title": threat.get('title'),
                         "link": threat.get('link'),
-                        "ai_summary": ai_summary,
-                        "time": simdi.strftime("%H:%M")
+                        "ai_summary": ai_summary
                     }
                     self.news_buffer.append(news_item)
                     self.save_json(self.news_buffer_file, self.news_buffer)
                     logger.info(f"📰 Haber Kumbaraya Eklendi: {threat['title'][:30]}")
                     
+                # ZAFİYET İSE -> KRİTİKSE BİLDİR
                 else:
-                    # TEKNİK ZAFİYET ise: Kriterlere bak, anında bildir.
                     if current_score >= 7.0: should_notify = True
                     elif threat['source'] == "CISA KEV": should_notify = True
                     elif self.check_is_critical(threat): should_notify = True
                     
-                    # Envanter Kontrolü
                     text_check = (threat.get('title', '') + threat.get('desc', '')).lower()
                     if any(asset in text_check for asset in self.my_assets): should_notify = True
 
-            # 2. GÜNCELLEME (Sadece teknik zafiyetler için mantıklı)
+            # GÜNCELLEME (Sadece Teknik Zafiyetler İçin)
             elif not is_news_source and current_score >= 7.0 and previous_score < 7.0:
                 is_update = True
                 should_notify = True
                 self.known_ids[threat_id] = current_score
                 logger.info(f"🚨 YÜKSELTME: {threat_id}")
             
-            # --- ANLIK BİLDİRİM GÖNDERİMİ (Sadece Teknik Zafiyetler) ---
+            # BİLDİRİM GÖNDERME
             if should_notify and not is_news_source:
                 header = "📈 SEVİYE YÜKSELDİ" if is_update else "ACİL UYARI"
                 msg = await self.format_alert_technical(threat, header)
