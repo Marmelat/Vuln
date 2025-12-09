@@ -13,8 +13,9 @@ from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
 import urllib.parse
-import ssl # YENİ: SSL Yönetimi
-import certifi # YENİ: Sertifika doğrulama için
+import ssl 
+import certifi 
+from typing import List, Dict, Any, Union
 
 # .env yükle
 load_dotenv()
@@ -22,13 +23,10 @@ load_dotenv()
 logger = logging.getLogger("SecurityBot")
 
 # --- GLOBAL SSL FIX ---
-# Bu, PacketStorm gibi sertifika hataları veren kaynaklar için SSL doğrulamasını ayarlar.
-# Güvenlik riski taşır, ancak EXC hatalarını çözer.
 try:
     ssl_context = ssl.create_default_context(cafile=certifi.where())
 except:
-    ssl_context = None # Eğer certifi yoksa (daha az güvenli)
-
+    ssl_context = None 
 
 class IntelThread:
     def __init__(self):
@@ -106,6 +104,7 @@ class IntelThread:
         self.daily_stats_file = "daily_stats.json"
         self.news_buffer_file = "daily_news_buffer.json"
         
+        # GÜVENLİ YÜKLEME (DATA TYPE FIX)
         self.known_ids = self.load_json_safe(self.memory_file)
         self.daily_stats = self.load_json_safe(self.daily_stats_file)
         self.news_buffer = self.load_json_safe(self.news_buffer_file, is_list=True)
@@ -146,7 +145,7 @@ class IntelThread:
         if not self.tg_token: return
         url = f"https://api.telegram.org/bot{self.tg_token}/getUpdates"
         params = {"offset": self.last_update_id + 1, "timeout": 1}
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
             try:
                 async with session.get(url, params=params) as response:
                     if response.status == 200:
@@ -188,6 +187,31 @@ class IntelThread:
             else: await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
         elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başladı.")
         elif cmd == "/aylik": await self.send_monthly_executive_report(force=True)
+        elif cmd == "/analiz": await self.handle_analysis_request(cmd_parts)
+
+    async def handle_analysis_request(self, parts):
+        tr = pytz.timezone('Europe/Istanbul')
+        today = datetime.now(tr)
+        start_date = None
+        end_date = None
+        try:
+            if len(parts) == 1:
+                start_date = today.replace(day=1)
+                end_date = today
+            elif len(parts) == 2:
+                dt = datetime.strptime(parts[1], "%Y-%m")
+                start_date = dt
+                next_month = dt.replace(day=28) + timedelta(days=4)
+                end_date = next_month - timedelta(days=next_month.day)
+            elif len(parts) == 3:
+                start_date = datetime.strptime(parts[1], "%Y-%m-%d")
+                end_date = datetime.strptime(parts[2], "%Y-%m-%d")
+            
+            start_date = start_date.replace(hour=0, minute=0, second=0)
+            end_date = end_date.replace(hour=23, minute=59, second=59)
+            await self.send_telegram_card(f"📊 <b>Analiz Hazırlanıyor...</b>\n📅 {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}")
+            await self.generate_custom_report(start_date, end_date)
+        except ValueError: await self.send_telegram_card("⚠️ Hatalı Format! Örn: /analiz 2025-12-01 2025-12-10")
 
     # --- 5. LOGGING ---
     def log_to_monthly_json(self, item, old_score=None):
@@ -253,7 +277,6 @@ class IntelThread:
         if self.model:
             top_risks = sorted(filtered_data, key=lambda x: x.get('score', 0), reverse=True)[:10]
             summary_text = "\n".join([f"- {i.get('title')} ({i.get('score')})" for i in top_risks])
-            
             prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {total}, Kritik: {crit}, Yükselen: {escalated}\n\nÖrnek Tehditler:\n{summary_text}"
             try:
                 resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, prompt)
@@ -278,7 +301,7 @@ class IntelThread:
     async def download_and_send_photo(self, image_url, caption):
         if not self.tg_token: return
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
                 async with session.get(image_url) as resp:
                     if resp.status == 200:
                         img_data = await resp.read()
@@ -306,7 +329,7 @@ class IntelThread:
         if keyboard: payload["reply_markup"] = {"inline_keyboard": [keyboard]}
         
         try:
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
                 await s.post(url, json=payload, headers=self.headers)
         except: pass
 
@@ -316,7 +339,7 @@ class IntelThread:
         data.add_field('chat_id', self.tg_chat_id)
         data.add_field('document', open(filepath, 'rb'), filename=os.path.basename(filepath))
         try:
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
                 await s.post(url, data=data)
         except: pass
 
@@ -324,14 +347,14 @@ class IntelThread:
         url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
         payload = {"chat_id": self.tg_chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
         try:
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
                 await s.post(url, json=payload, headers=self.headers)
         except: pass
 
     # --- 8. HABER BÜLTENİ ---
     async def send_daily_news_digest(self, force=False):
         today = str(date.today())
-        if self.last_news_report_date == today and not force: return
+        if self.last_news_report_date != today and not force: return
         if not self.news_buffer: return
         report = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n📅 <i>{today} | Gün Sonu</i>\n⎯⎯⎯⎯⎯⎯⎯\n\n"
         for news in self.news_buffer:
@@ -484,3 +507,154 @@ class IntelThread:
             tasks = [self.parse_generic(s, src, src["type"]) for src in self.sources]
             results = await asyncio.gather(*tasks)
             return [i for sub in results for i in sub]
+
+    async def parse_generic(self, session, source, mode):
+        # HATA KORUMALI
+        try:
+            await asyncio.sleep(random.uniform(30.0, 60.0))
+            timeout = aiohttp.ClientTimeout(total=40)
+            items = []
+            
+            # --- HTML PARSER (TENABLE) ---
+            if mode == "html_tenable":
+                async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
+                    if r.status != 200: return []
+                    html = await r.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    rows = soup.find_all('tr')
+                    for row in rows:
+                        cols = row.find_all('td')
+                        if len(cols) >= 2:
+                            link_tag = row.find('a')
+                            if link_tag:
+                                title = link_tag.text.strip()
+                                link = "https://www.tenable.com" + link_tag['href']
+                                raw_id = link.split('/')[-1]
+                                items.append({"raw_id": raw_id, "title": title, "desc": "Tenable Plugin Update", "link": link, "score": 0.0}) 
+
+            # --- JSON PARSER ---
+            elif "json" in mode:
+                async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
+                    if r.status != 200: return []
+                    d = await r.json()
+                    
+                    if mode == "json_cisa":
+                         items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in d.get("vulnerabilities", [])[:5]]
+                    elif mode == "json_nist":
+                         for i in d.get("vulnerabilities", [])[:5]:
+                             cve = i.get("cve", {})
+                             items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST Kaydı", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": 7.5}) 
+                    elif mode == "json_cveorg":
+                         items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
+            
+            # --- FEED PARSER ---
+            elif mode == "feed":
+                async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
+                    if r.status != 200: return []
+                    content = await r.read()
+                    f = feedparser.parse(content)
+                    for e in f.entries[:5]:
+                        items.append({"raw_id": e.link, "title": e.title, "desc": e.get('summary',''), "link": e.link, "score": 0})
+            
+            final = []
+            for i in items:
+                i['score'] = self.extract_score(i)
+                # İLK DERİN KONTROL (DEEP SCOUT)
+                if i['score'] == 0.0 and i['source'] not in self.news_sources_list and i.get('link'):
+                    i['score'] = await self.enrich_score_from_web(i['link'], i['score'])
+                
+                i['id'] = self.normalize_id(i["raw_id"], i["link"], i["title"])
+                i['source'] = source['name']
+                final.append(i)
+            return final
+        except Exception as e:
+            logger.error(f"Kaynak {source['name']} genel hata: {e}")
+            self.failed_sources[source['name']] = "EXC"
+            return []
+
+    async def process_intelligence(self):
+        await self.check_commands()
+        
+        tr = pytz.timezone('Europe/Istanbul')
+        simdi = datetime.now(tr)
+        self.last_scan_timestamp = simdi.strftime("%H:%M:%S")
+        
+        if simdi.hour == 18 and self.last_news_report_date != str(date.today()):
+            await self.send_daily_news_digest()
+            
+        if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
+            await self.send_monthly_executive_report()
+
+        logger.info("🔎 Tarama Sürüyor (v20.2 Stabil - Tenable Fix)...")
+        self.check_daily_reset()
+        await self.check_heartbeat()
+
+        all_threats = await self.fetch_all()
+        for threat in all_threats:
+            tid = threat["id"]
+            curr = threat.get('score', 0)
+            prev = self.known_ids.get(tid)
+            src = threat.get('source', '')
+            is_news = src in self.news_sources_list
+            notify = False
+            is_upd = False
+            is_tenable = src.startswith("Tenable")
+
+            # --- TENAPLE GECİKMELİ KRİTİK KONTROLÜ (2. ŞANS) ---
+            # Eğer Tenable'dan geliyorsa ve daha önce 8.0'dan düşük bir skorla kaydedilmişse,
+            # (Farklı bir skor da olsa bu kontrolü yapıp tekrar zenginleştireceğiz)
+            if is_tenable and prev is not None and prev < 8.0 and curr < 8.0 and threat.get('link'):
+                new_score = await self.enrich_score_from_web(threat['link'], curr)
+                if new_score > curr and new_score >= 8.0:
+                    curr = new_score
+                    threat['score'] = curr
+                    # Bu bir eskalasyondur
+                    self.known_ids[tid] = curr
+                    self.log_to_monthly_json(threat, old_score=prev)
+                    is_upd = True
+                    notify = True
+            # --- TENAPLE KONTROL SONU ---
+
+            if prev is None:
+                # Yeni Kayıt
+                self.known_ids[tid] = curr
+                self.update_daily_stats(threat)
+                self.log_to_monthly_json(threat) 
+                
+                if is_news: 
+                    summ = await self.ask_gemini(threat.get('title',''), threat.get('desc',''), src, True)
+                    self.news_buffer.append({"title": threat['title'], "link": threat['link'], "ai_summary": summ})
+                    self.save_json(self.news_buffer_file, self.news_buffer)
+                else: 
+                    # KURAL: Yüksek/Kritik (8.0+) VEYA CISA/ZDI/Asset
+                    if curr >= 8.0: notify = True
+                    elif threat['source']=="CISA KEV": notify = True
+                    elif threat['source']=="ZeroDayInitiative": notify = True
+                    
+                    if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
+
+            elif not is_news and not is_upd:
+                # Normal Eskalasyon (Tenable gecikmesi harici)
+                if curr > prev and curr >= 8.0 and prev < 8.0:
+                    is_upd = True
+                    notify = True
+                    self.known_ids[tid] = curr
+                    self.log_to_monthly_json(threat, old_score=prev)
+            
+            # Bildirim Gönderme
+            if notify and not is_news:
+                header = "📈 SEVİYE YÜKSELDİ" if is_upd else "ACİL GÜVENLİK UYARISI"
+                # Tenable özel bildirimi
+                if is_tenable and is_upd:
+                    header = "🔥 TENABLE GECİKMELİ KRİTİK (KONTROL EDİLDİ)"
+                    
+                msg = await self.format_alert_technical(threat, header)
+                ref = self.extract_official_solution_link(threat.get('desc', ''))
+                search = threat['title'] if "http" in tid else tid
+                await self.send_telegram_card(msg, link=threat['link'], search_query=search, extra_ref=ref)
+                self.save_json(self.memory_file, self.known_ids)
+                
+            # Eğer Tenable 2. şans ile skorunu yükseltti ama bildirime girmediyse bile kaydet
+            elif prev is not None and self.known_ids.get(tid) != curr:
+                 self.known_ids[tid] = curr
+                 self.save_json(self.memory_file, self.known_ids)
