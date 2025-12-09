@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
 import urllib.parse
+from bs4 import BeautifulSoup # YENİ: HTML Kazıyıcı
 
 # .env yükle
 load_dotenv()
@@ -49,7 +50,8 @@ class IntelThread:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
+            "Upgrade-Insecure-Requests": "1",
+            "Cache-Control": "no-cache",
         }
         
         self.translator = GoogleTranslator(source='auto', target='tr')
@@ -60,6 +62,11 @@ class IntelThread:
         
         # --- 2. KAYNAKLAR ---
         self.sources = [
+            # --- TENABLE ÖZEL SCRAPER (HTML) ---
+            # "type": "html_tenable" olarak işaretledik, özel fonksiyon çalışacak.
+            {"name": "Tenable Plugins (New)", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "html_tenable"},
+            {"name": "Tenable Plugins (Upd)", "url": "https://www.tenable.com/plugins/feeds?sort=updated", "type": "html_tenable"},
+
             # HABERLER
             {"name": "Google News Hunter", "url": "https://news.google.com/rss/search?q=cyber+security+vulnerability+exploit+OR+zero-day+when:1d&hl=en-US&gl=US&ceid=US:en", "type": "feed"},
             {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "type": "feed"},
@@ -67,7 +74,6 @@ class IntelThread:
             {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"},
 
             # TEKNİK & VENDOR
-            {"name": "Tenable Research", "url": "https://www.tenable.com/blog/feed", "type": "feed"},
             {"name": "MSRC", "url": "https://api.msrc.microsoft.com/update-guide/rss", "type": "feed"},
             {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
             {"name": "CERT-EU", "url": "https://www.cert.europa.eu/feed/", "type": "feed"},
@@ -82,17 +88,13 @@ class IntelThread:
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
-            
-            # TENABLE PLUGINLERİ (Kullanıcı İsteği)
-            {"name": "Tenable Plugins (New)", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "feed"},
-            {"name": "Tenable Plugins (Upd)", "url": "https://www.tenable.com/plugins/feeds?sort=updated", "type": "feed"},
         ]
         
+        # Dosya Yönetimi
         self.memory_file = "processed_intelligence.json"
         self.daily_stats_file = "daily_stats.json"
         self.news_buffer_file = "daily_news_buffer.json"
         
-        # GÜVENLİ YÜKLEME (Auto-Repair)
         self.known_ids = self.load_json_safe(self.memory_file)
         self.daily_stats = self.load_json_safe(self.daily_stats_file)
         self.news_buffer = self.load_json_safe(self.news_buffer_file, is_list=True)
@@ -112,7 +114,7 @@ class IntelThread:
             else:
                 prompt = (
                     f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
-                    f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description}\n\n"
+                    f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description[:2000]}\n\n"
                     f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
                     f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa sil)\n"
                     f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
@@ -148,9 +150,7 @@ class IntelThread:
         cmd = cmd_parts[0].lower()
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            try: m_name = self.model.model_name
-            except: m_name = "Gemini"
-            ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
+            ai_status = "✅ Aktif" if self.model else "⚠️ Pasif"
             if self.failed_sources: health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
             else: health_msg = "✅ Sağlıklı"
             msg = (
@@ -261,10 +261,8 @@ class IntelThread:
         
         ai_comment = "Veri analizi yapılamadı."
         if self.model:
-            # Akıllı Özetleme: Sadece en önemli 10 taneyi gönder
             top_risks = sorted(filtered_data, key=lambda x: x.get('score', 0), reverse=True)[:10]
             summary_text = "\n".join([f"- {i.get('title')} ({i.get('score')})" for i in top_risks])
-            
             prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {total}, Kritik: {crit}, Yükselen: {escalated}\n\nÖrnek Tehditler:\n{summary_text}"
             try:
                 resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, prompt)
@@ -301,7 +299,6 @@ class IntelThread:
                         data.add_field('parse_mode', 'HTML')
                         await session.post(url, data=data)
         except Exception as e:
-            logger.error(f"Grafik hatası: {e}")
             await self.send_telegram_card(f"{caption}\n\n(⚠️ Grafik yüklenemedi)")
 
     async def send_telegram_card(self, message, link=None, search_query=None, extra_ref=None):
@@ -315,10 +312,7 @@ class IntelThread:
             q = search_query[:50].replace(" ", "+")
             keyboard.append({"text": "🛡️ Çözüm Ara", "url": f"https://www.google.com/search?q={q}+patch"})
         if keyboard: payload["reply_markup"] = {"inline_keyboard": [keyboard]}
-        
-        try:
-            async with aiohttp.ClientSession() as s:
-                await s.post(url, json=payload, headers=self.headers)
+        try: async with aiohttp.ClientSession() as s: await s.post(url, json=payload, headers=self.headers)
         except: pass
 
     async def send_telegram_file(self, filepath):
@@ -326,17 +320,13 @@ class IntelThread:
         data = aiohttp.FormData()
         data.add_field('chat_id', self.tg_chat_id)
         data.add_field('document', open(filepath, 'rb'), filename=os.path.basename(filepath))
-        try:
-            async with aiohttp.ClientSession() as s:
-                await s.post(url, data=data)
+        try: async with aiohttp.ClientSession() as s: await s.post(url, data=data)
         except: pass
 
     async def send_telegram_photo(self, photo_url, caption):
         url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
         payload = {"chat_id": self.tg_chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
-        try:
-            async with aiohttp.ClientSession() as s:
-                await s.post(url, json=payload, headers=self.headers)
+        try: async with aiohttp.ClientSession() as s: await s.post(url, json=payload, headers=self.headers)
         except: pass
 
     # --- 8. HABER BÜLTENİ ---
@@ -358,27 +348,24 @@ class IntelThread:
 
     # --- 9. YARDIMCI ---
     def load_json_safe(self, filepath, is_list=False):
-        """GÜVENLİ YÜKLEME: Hata veya tip uyuşmazlığı varsa onarır"""
+        """GÜVENLİ YÜKLEME"""
         default = [] if is_list else {}
         if os.path.exists(filepath):
             try:
                 with open(filepath, 'r') as f:
                     data = json.load(f)
-                    # TİP KONTROLÜ
                     if is_list:
                         if isinstance(data, list): return data
-                        else: return default # Yanlış tipse sıfırla
+                        else: return default
                     else:
                         if isinstance(data, dict): return data
-                        elif isinstance(data, list): # Eski listeyi sözlüğe çevir (Migration)
-                            return {k: 0 for k in data}
+                        elif isinstance(data, list): return {k: 0 for k in data}
                         else: return default
             except: return default
         return default
     
     def save_json(self, filepath, data):
-        try:
-            with open(filepath, 'w') as f: json.dump(data, f)
+        try: with open(filepath, 'w') as f: json.dump(data, f)
         except: pass
     
     def extract_official_solution_link(self, text):
@@ -461,8 +448,8 @@ class IntelThread:
         score = item.get('score', 0)
         source_name = item.get('source', '')
         
+        # AI Analizi (Fallback ile)
         ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''), source_name, is_news=False)
-        
         if "Model" in ai_analiz_raw or "Pasif" in ai_analiz_raw:
              manual_class = "📦 **Sınıf:** Genel Zafiyet (AI Pasif)\n"
              ai_output = f"{manual_class}{ai_analiz_raw}\n"
@@ -491,12 +478,33 @@ class IntelThread:
 
     async def parse_generic(self, session, source, mode):
         try:
+            # Jitter
             await asyncio.sleep(random.uniform(30.0, 60.0))
-            
             timeout = aiohttp.ClientTimeout(total=40)
             items = []
             
-            if "json" in mode:
+            # --- HTML PARSER (TENABLE) ---
+            if mode == "html_tenable":
+                async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
+                    if r.status != 200: return []
+                    html = await r.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    # Tenable tablosunu bul (Genelde tbody tr içindedir)
+                    # Not: Bu yapı Tenable sitesine göre değişebilir, genel bir table taraması yapalım.
+                    rows = soup.find_all('tr')
+                    for row in rows:
+                        cols = row.find_all('td')
+                        if len(cols) >= 2:
+                            link_tag = row.find('a')
+                            if link_tag:
+                                title = link_tag.text.strip()
+                                link = "https://www.tenable.com" + link_tag['href']
+                                # ID genellikle ilk kolondadır veya linkin içindedir
+                                raw_id = link.split('/')[-1]
+                                items.append({"raw_id": raw_id, "title": title, "desc": "Tenable Plugin Update", "link": link, "score": 8.0}) # Skor tahmini
+
+            # --- JSON PARSER ---
+            elif "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200: 
                         if source['name'] not in self.failed_sources: self.failed_sources[source['name']] = r.status
@@ -513,6 +521,7 @@ class IntelThread:
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
             
+            # --- FEED PARSER ---
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200:
@@ -545,7 +554,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v15.0 Fix)...")
+        logger.info("🔎 Tarama Sürüyor (v19.0 Tenable Scraper)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -570,7 +579,9 @@ class IntelThread:
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
                     is_technical = src not in self.news_sources_list
-                    if curr >= 7.0 or (curr == 0.0 and is_technical) or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
+                    # Tenable Scraper için her zaman notify = True (Çünkü sadece yeni/güncellenenleri çekiyor)
+                    if "Tenable" in src: notify = True
+                    elif curr >= 7.0 or (curr == 0.0 and is_technical) or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
                         notify = True
                     
                     if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
