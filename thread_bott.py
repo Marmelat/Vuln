@@ -66,6 +66,7 @@ class IntelThread:
         self.last_scan_timestamp = "Henüz Başlamadı"
         self.failed_sources = {}
 
+        # Backend EN, sunum TR: translator sadece Telegram çıktısında kullanılacak
         self.translator = GoogleTranslator(source="auto", target="tr")
 
         # --- LİSTELER ---
@@ -88,17 +89,18 @@ class IntelThread:
 
         # --- 2. KAYNAKLAR ---
         self.sources = [
-            # TENABLE (Özel - HTML Scraper / Liste Sayfası)
+            # TENABLE (RSS feed gibi davranıyoruz)
             {
                 "name": "Tenable Plugins (New)",
                 "url": "https://www.tenable.com/plugins/feeds?sort=newest",
-                "type": "html_tenable",
+                "type": "tenable_rss",
             },
             {
                 "name": "Tenable Plugins (Upd)",
                 "url": "https://www.tenable.com/plugins/feeds?sort=updated",
-                "type": "html_tenable",
+                "type": "tenable_rss",
             },
+
             # TEKNİK API
             {
                 "name": "GitHub Advisory",
@@ -115,12 +117,14 @@ class IntelThread:
                 "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=10",
                 "type": "api_json",
             },
+
             # JSON FEED
             {
                 "name": "CISA KEV",
                 "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
                 "type": "json_simple",
             },
+
             # RSS FEED
             {
                 "name": "Google News Hunter",
@@ -229,31 +233,37 @@ class IntelThread:
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         ]
 
-        # 🔴 Burada tanımlı değildi → HTTP çağrıları patlıyordu
         self.headers = {
             "User-Agent": random.choice(self.user_agents),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
 
-    # --- 3. GEMINI AI ---
+    # --- 3. GEMINI AI (backend EN, sonra TR'ye çeviriyoruz) ---
     async def ask_gemini(self, title, description, source_name, is_news=False):
+        # Model yoksa: ham İngilizce string dön (backend EN kalsın)
         if not self.model:
-            return self.translate_text(f"{title}\n{description}")
+            return f"{title}\n{description}"
+
         try:
             if is_news:
-                prompt = f"Haber Özeti (Tek Cümle): {title}\n{description[:1500]}"
+                prompt = (
+                    "You are a cyber security analyst. Summarize the following news in ONE short English sentence.\n"
+                    f"Source: {source_name}\n"
+                    f"Title: {title}\n"
+                    f"Description: {description[:1500]}"
+                )
             else:
                 prompt = (
-                    "Sen kıdemli bir SOC Analistisin. Aşağıdaki zafiyeti analiz et.\n"
-                    f"Kaynak: {source_name}\n"
-                    f"Başlık: {title}\n"
-                    f"Detay: {description[:2000]}\n\n"
-                    "Çıktı Formatı (Markdown, kod bloğu YOK):\n"
-                    "📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Mobil | Veritabanı]\n"
-                    "🎯 **Hedef:** (Etkilenen ürün ve versiyon)\n"
-                    "💀 **Risk:** (RCE, DoS, SQLi vb. - Kısa özet)\n"
-                    "🛡️ **Aksiyon:** (Hangi sürüme güncellenmeli veya ne yapılmalı? - Emir kipi)"
+                    "You are a senior SOC analyst. Analyze the following vulnerability.\n\n"
+                    f"Source: {source_name}\n"
+                    f"Title: {title}\n"
+                    f"Details: {description[:2000]}\n\n"
+                    "Respond in **English** with the following structure (no code blocks):\n"
+                    "📦 **Class:** [Operating System | Web App | Network | Mobile | Database]\n"
+                    "🎯 **Target:** (Affected product and versions)\n"
+                    "💀 **Risk:** (RCE, DoS, SQLi etc. - short summary)\n"
+                    "🛡️ **Action:** (What should be done? - imperative form)\n"
                 )
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
@@ -261,7 +271,8 @@ class IntelThread:
             )
             return response.text.strip()
         except Exception:
-            return self.translate_text(f"{title}\n{description}")[:300]
+            # Hata olursa da backend EN kalsın
+            return f"{title}\n{description}"
 
     # --- 4. CHATOPS ---
     async def check_commands(self):
@@ -333,7 +344,7 @@ class IntelThread:
             await self.send_telegram_card("🚀 Tarama başladı.")
 
         elif cmd == "/aylik":
-            # Bu fonksiyon senin tam kodunda tanımlıdır diye dokunmadım
+            # Kendi kodunda tanımlı olduğunu varsayıyorum
             await self.send_monthly_executive_report(force=True)
 
     # --- 5. LOGGING ---
@@ -413,17 +424,17 @@ class IntelThread:
                 [f"- {i.get('title')} ({i.get('score')})" for i in top_risks]
             )
             prompt = (
-                "Rapor Özeti Yaz.\n"
-                f"Tarih: {start_date.date()}-{end_date.date()}\n"
-                f"Kritik: {crit}, Yüksek: {high}\n"
-                f"En Önemli:\n{summary_text}\n"
-                "Yönetici özeti yaz."
+                "Write an executive summary in English.\n"
+                f"Date Range: {start_date.date()} - {end_date.date()}\n"
+                f"Critical: {crit}, High: {high}\n"
+                f"Top Items:\n{summary_text}\n"
             )
             try:
                 resp = await asyncio.get_event_loop().run_in_executor(
                     None, self.model.generate_content, prompt
                 )
-                ai_comment = resp.text.strip()
+                # Sunumda TR istersen buraya da translate ekleyebilirsin
+                ai_comment = self.translate_text(resp.text.strip())
             except Exception:
                 pass
 
@@ -566,9 +577,11 @@ class IntelThread:
             "⎯⎯⎯⎯⎯⎯⎯\n\n"
         )
         for news in self.news_buffer:
+            # news['ai_summary'] backend EN; burada TR'ye çevirebilirsin istersen
+            summary_tr = self.translate_text(news["ai_summary"])
             entry = (
                 f"🔹 <a href='{news['link']}'>{news['title']}</a>\n"
-                f"└ <i>{news['ai_summary']}</i>\n\n"
+                f"└ <i>{summary_tr}</i>\n\n"
             )
             if len(report) + len(entry) > 4000:
                 await self.send_telegram_card(report)
@@ -590,7 +603,6 @@ class IntelThread:
                     if is_list:
                         return data if isinstance(data, list) else default
                     else:
-                        # eski format liste ise dict'e çevir
                         return {k: 0 for k in data} if isinstance(data, list) else data
             except Exception:
                 return default
@@ -677,7 +689,6 @@ class IntelThread:
 
             text = risk_block.get_text(" ", strip=True)
 
-            # CVSS v3 Base Score 9.8 vb.
             m = re.search(
                 r"CVSS\s*v?3[\.\d]*\s*(?:Base Score)?\s*([0-9]\.\d)",
                 text,
@@ -686,7 +697,6 @@ class IntelThread:
             if m:
                 return float(m.group(1))
 
-            # CVSS v2 fallback
             m2 = re.search(
                 r"CVSS\s*2[\.\d]*\s*(?:Base Score)?\s*([0-9]\.\d)",
                 text,
@@ -695,7 +705,6 @@ class IntelThread:
             if m2:
                 return float(m2.group(1))
 
-            # Sadece severity varsa kaba map
             if "Critical" in text:
                 return 9.8
             if "High" in text:
@@ -726,13 +735,11 @@ class IntelThread:
 
                 html = await response.text()
 
-                # 🔥 Tenable plugin sayfası
                 if "tenable.com/plugins/nessus" in url:
                     tenable_score = self.parse_tenable_cvss(html)
                     if tenable_score is not None:
                         return tenable_score
 
-                # GENEL fallback (diğer vendor sayfaları için)
                 match = re.search(
                     r"(?:CVSS[^0-9]{0,20}|Base Score[^0-9]{0,20})(\d{1,2}\.\d)",
                     html,
@@ -763,7 +770,6 @@ class IntelThread:
             }
         if self.daily_stats.get("date") != today:
             if not force_check:
-                # Tam kodunda tanımlıysa çalışacak, yoksa burayı kendine göre düzenlersin
                 asyncio.create_task(self.send_daily_summary_report())
             self.daily_stats = {
                 "date": today,
@@ -816,21 +822,18 @@ class IntelThread:
         score = item.get("score", 0)
         source_name = item.get("source", "")
 
-        ai_analiz_raw = await self.ask_gemini(
+        # AI analizi EN
+        ai_output_en = await self.ask_gemini(
             item.get("title", ""),
             item.get("desc", ""),
             source_name,
             is_news=False,
         )
+        if not ai_output_en:
+            ai_output_en = "Analysis not available."
 
-        if "Model" in ai_analiz_raw or "Pasif" in ai_analiz_raw:
-            ai_output = (
-                "📦 **Sınıf:** Genel Zafiyet (AI Pasif)\n"
-                "🎯 **Hedef Sistem:** Analiz Edilemedi\n\n"
-                f"{ai_analiz_raw}"
-            )
-        else:
-            ai_output = ai_analiz_raw
+        # Telegram için TR çeviri
+        ai_output_tr = self.translate_text(ai_output_en)
 
         epss_str = await self.enrich_with_epss(item["id"])
         icon = "🛑" if score >= 9 else "🟠"
@@ -845,7 +848,7 @@ class IntelThread:
             f"<b>{icon} {header_title}</b>\n"
             "⎯⎯⎯⎯⎯⎯\n"
             f"{meta_info}\n\n"
-            f"{ai_output}\n"
+            f"{ai_output_tr}\n"
         )
 
     # --- ANA DÖNGÜ ---
@@ -859,39 +862,32 @@ class IntelThread:
 
     async def parse_generic(self, session, source, mode):
         try:
-            # Kaynaklar arasında çok hızlı gezinmemek için
             await asyncio.sleep(random.uniform(30.0, 60.0))
             timeout = aiohttp.ClientTimeout(total=40)
             items = []
 
-            # --- TENABLE HTML LİSTE SAYFASI ---
-            if mode == "html_tenable":
+            # --- TENABLE RSS ---
+            if mode == "tenable_rss":
                 async with session.get(
                     source["url"], timeout=timeout, headers=self.headers
                 ) as r:
                     if r.status != 200:
                         self.failed_sources[source["name"]] = r.status
                         return []
-                    html = await r.text()
-                    soup = BeautifulSoup(html, "lxml")
-                    rows = soup.find_all("tr")
-                    for row in rows:
-                        cols = row.find_all("td")
-                        if len(cols) >= 2:
-                            link_tag = row.find("a")
-                            if link_tag and link_tag.get("href"):
-                                title = link_tag.text.strip()
-                                link = "https://www.tenable.com" + link_tag["href"]
-                                raw_id = link.split("/")[-1]
-                                items.append(
-                                    {
-                                        "raw_id": raw_id,
-                                        "title": title,
-                                        "desc": "Tenable Plugin Update",
-                                        "link": link,
-                                        "score": 0.0,
-                                    }
-                                )
+                    content = await r.read()
+                    f = feedparser.parse(content)
+                    for e in f.entries[:20]:
+                        link = e.link
+                        raw_id = link.split("/")[-1]
+                        items.append(
+                            {
+                                "raw_id": raw_id,
+                                "title": e.title,
+                                "desc": getattr(e, "summary", ""),
+                                "link": link,
+                                "score": 0.0,
+                            }
+                        )
 
             # --- GITHUB ADVISORY API ---
             elif mode == "api_github":
@@ -936,13 +932,12 @@ class IntelThread:
                                 {
                                     "raw_id": cid,
                                     "title": f"NIST: {cid}",
-                                    "desc": "NIST Kaydı",
+                                    "desc": "NIST record.",
                                     "link": f"https://nvd.nist.gov/vuln/detail/{cid}",
                                     "score": 0.0,
                                 }
                             )
                     else:
-                        # CVE.org formatı (cve_ids alanı)
                         for cv in d.get("cve_ids", [])[:10]:
                             cid = cv.get("cve_id")
                             if not cid:
@@ -950,8 +945,8 @@ class IntelThread:
                             items.append(
                                 {
                                     "raw_id": cid,
-                                    "title": f"Yeni CVE: {cid}",
-                                    "desc": "Yeni zafiyet.",
+                                    "title": f"New CVE: {cid}",
+                                    "desc": "Newly published vulnerability.",
                                     "link": f"https://www.cve.org/CVERecord?id={cid}",
                                     "score": 0.0,
                                 }
@@ -980,7 +975,7 @@ class IntelThread:
                             }
                         )
 
-            # --- RSS / FEED ---
+            # --- RSS / FEED GENEL ---
             elif mode == "feed":
                 async with session.get(
                     source["url"], timeout=timeout, headers=self.headers
@@ -1001,10 +996,8 @@ class IntelThread:
                             }
                         )
 
-            # --- HER ŞEYİ NORMALLE ---
             final = []
             for i in items:
-                # Başta RSS / JSON'da skor yok → içerikten çekmeye çalış
                 i["score"] = self.extract_score(i)
 
                 if (
@@ -1030,7 +1023,6 @@ class IntelThread:
             return []
 
     async def process_intelligence(self):
-        # Komutları kontrol et
         await self.check_commands()
 
         tr = pytz.timezone("Europe/Istanbul")
@@ -1047,7 +1039,7 @@ class IntelThread:
         ):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (Tenable-CVSS Enhanced)...")
+        logger.info("🔎 Tarama Sürüyor (Tenable-RSS + CVSS)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -1068,7 +1060,7 @@ class IntelThread:
                 self.log_to_monthly_json(threat)
 
                 if is_news:
-                    summ = await self.ask_gemini(
+                    ai_summary_en = await self.ask_gemini(
                         threat.get("title", ""),
                         threat.get("desc", ""),
                         src,
@@ -1078,12 +1070,11 @@ class IntelThread:
                         {
                             "title": threat["title"],
                             "link": threat["link"],
-                            "ai_summary": summ,
+                            "ai_summary": ai_summary_en,
                         }
                     )
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else:
-                    # 🔥 Burada CVSS değerini dikkate alıyoruz
                     if curr >= 8.5:
                         notify = True
                     elif threat["source"] == "CISA KEV":
@@ -1091,10 +1082,8 @@ class IntelThread:
                     elif threat["source"] == "ZeroDayInitiative":
                         notify = True
                     elif "Tenable" in threat["source"] and curr >= 7.0:
-                        # Tenable plugin ise daha düşük eşikte bile bildirim al
                         notify = True
 
-                    # Kurum varlıklarına temas eden her şeyi bildir
                     if any(
                         a in (threat["title"] + threat["desc"]).lower()
                         for a in self.my_assets
