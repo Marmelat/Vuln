@@ -63,16 +63,15 @@ class IntelThread:
         self.news_sources_list = ["Google News Hunter", "BleepingComputer", "The Hacker News", "Dark Reading"]
         self.my_assets = ["wordpress", "fortinet", "cisco", "ubuntu", "nginx", "exchange server", "palo alto", "sql server"]
         
-        # --- DİNAMİK USER-AGENT HAVUZU (HER İSTEKTE KİMLİK DEĞİŞİR) ---
+        # --- DİNAMİK USER-AGENT HAVUZU ---
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         ]
 
-        # --- 2. KAYNAKLAR (TENABLE HTML & TEKNİK) ---
+        # --- 2. KAYNAKLAR ---
         self.sources = [
             # TENABLE (Özel İlgi - HTML)
             {"name": "Tenable Plugins (New)", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "html_tenable"},
@@ -92,7 +91,7 @@ class IntelThread:
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
             
-            # EXPLOIT & ZERO-DAY
+            # EXPLOIT
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
@@ -101,9 +100,11 @@ class IntelThread:
         # Dosya Yönetimi
         self.memory_file = "processed_intelligence.json"
         self.daily_stats_file = "daily_stats.json"
+        self.news_buffer_file = "daily_news_buffer.json"
         
         self.known_ids = self.load_json_safe(self.memory_file)
         self.daily_stats = self.load_json_safe(self.daily_stats_file)
+        self.news_buffer = self.load_json_safe(self.news_buffer_file, is_list=True)
         
         if not isinstance(self.daily_stats, dict) or "date" not in self.daily_stats:
             self.daily_stats = {"date": str(date.today()), "total": 0, "critical": 0, "items": []}
@@ -111,18 +112,14 @@ class IntelThread:
         self.check_daily_reset(force_check=True)
         self.last_flush_time = datetime.now()
         self.last_heartbeat_date = None
+        self.last_news_report_date = None
         self.last_monthly_report_date = None
 
-    # --- YENİ: PROFESYONEL İSTEK MOTORU (SMART FETCHER) ---
+    # --- SMART FETCHER (İstek Motoru) ---
     async def fetch_content_robust(self, url, session):
-        """
-        Bu fonksiyon, isteği atar, hata alırsa bekleyip tekrar dener (Retry Logic).
-        Her denemede farklı bir User-Agent kullanır (Identity Rotation).
-        """
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Rastgele bir kimlik seç
                 current_ua = random.choice(self.user_agents)
                 headers = {
                     "User-Agent": current_ua,
@@ -132,17 +129,14 @@ class IntelThread:
                     "Connection": "keep-alive"
                 }
                 
-                # İsteği at (SSL Fix ile)
                 async with session.get(url, headers=headers, timeout=30, ssl=ssl_context) as response:
                     if response.status == 200:
                         return await response.read()
                     elif response.status in [429, 503]:
-                        # Sunucu "Çok hızlı geliyorsun" dediyse bekle (Exponential Backoff)
                         await asyncio.sleep(2 ** (attempt + 1)) 
                     else:
-                        # 404 gibi kalıcı hatalarda bekleme, çık
                         return None
-            except Exception as e:
+            except Exception:
                 await asyncio.sleep(2)
         return None
 
@@ -227,10 +221,12 @@ class IntelThread:
             mevcut = []
             if os.path.exists(dosya_ismi):
                 try:
-                    with open(dosya_ismi, 'r', encoding='utf-8') as f: mevcut = json.load(f)
+                    with open(dosya_ismi, 'r', encoding='utf-8') as f:
+                        mevcut = json.load(f)
                 except: mevcut = []
             mevcut.append(entry)
-            with open(dosya_ismi, 'w', encoding='utf-8') as f: json.dump(mevcut, f, ensure_ascii=False, indent=4)
+            with open(dosya_ismi, 'w', encoding='utf-8') as f:
+                json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
     # --- 6. RAPORLAMA ---
@@ -294,7 +290,7 @@ class IntelThread:
     async def download_and_send_photo(self, image_url, caption):
         if not self.tg_token: return
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
                 async with session.get(image_url) as resp:
                     if resp.status == 200:
                         img_data = await resp.read()
@@ -305,8 +301,7 @@ class IntelThread:
                         data.add_field('caption', caption)
                         data.add_field('parse_mode', 'HTML')
                         await session.post(url, data=data)
-        except Exception as e:
-            await self.send_telegram_card(f"{caption}\n(Grafik Yüklenemedi)")
+        except: await self.send_telegram_card(f"{caption}\n(Grafik Yüklenemedi)")
 
     async def send_telegram_card(self, message, link=None, search_query=None, extra_ref=None):
         if not self.tg_token: return
@@ -321,7 +316,7 @@ class IntelThread:
         if keyboard: payload["reply_markup"] = {"inline_keyboard": [keyboard]}
         
         try:
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
                 await s.post(url, json=payload, headers=self.headers)
         except: pass
 
@@ -331,7 +326,7 @@ class IntelThread:
         data.add_field('chat_id', self.tg_chat_id)
         data.add_field('document', open(filepath, 'rb'), filename=os.path.basename(filepath))
         try:
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
                 await s.post(url, data=data)
         except: pass
 
@@ -339,11 +334,11 @@ class IntelThread:
         url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
         payload = {"chat_id": self.tg_chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
         try:
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
                 await s.post(url, json=payload, headers=self.headers)
         except: pass
 
-    # --- 9. YARDIMCI ---
+    # --- 8. YARDIMCI ---
     def load_json_safe(self, filepath, is_list=False):
         default = [] if is_list else {}
         if os.path.exists(filepath):
@@ -356,13 +351,14 @@ class IntelThread:
         return default
     
     def save_json(self, filepath, data):
-        try: with open(filepath, 'w') as f: json.dump(data, f)
+        try:
+            with open(filepath, 'w') as f: json.dump(data, f)
         except: pass
     
     def extract_official_solution_link(self, text):
         if not text: return None
         urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
-        domains = ["microsoft.com", "cisco.com", "fortiguard.com", "paloaltonetworks.com", "tenable.com", "github.com"]
+        domains = ["microsoft.com", "cisco.com", "fortiguard.com", "tenable.com", "github.com", "oracle.com"]
         for u in urls:
             if any(d in u for d in domains): return u
         return None
@@ -381,21 +377,19 @@ class IntelThread:
     async def enrich_with_epss(self, cve):
         if not cve.startswith("CVE"): return "N/A"
         try:
-            # EPSS için de robust fetch kullan
-            content = await self.fetch_content_robust(f"https://api.first.org/data/v1/epss?cve={cve}", aiohttp.ClientSession())
-            if content:
-                d = json.loads(content)
-                return f"%{float(d['data'][0].get('epss',0))*100:.2f}"
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
+                async with s.get(f"https://api.first.org/data/v1/epss?cve={cve}", timeout=5, headers=self.headers) as r:
+                    d = await r.json()
+                    return f"%{float(d['data'][0].get('epss',0))*100:.2f}"
         except: return "N/A"
 
     async def enrich_score_from_web(self, url, current_score):
         if current_score > 0.0: return current_score
         try:
-            # DEEP SCOUT da artık robust fetch kullanıyor (Anti-Ban)
-            async with aiohttp.ClientSession() as session:
-                html_bytes = await self.fetch_content_robust(url, session)
-                if html_bytes:
-                    html = html_bytes.decode('utf-8', errors='ignore')
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                content = await self.fetch_content_robust(url, session)
+                if content:
+                    html = content.decode('utf-8', errors='ignore')
                     match = re.search(r"(?:CVSS|Base Score|Score).*?(\d{1,2}\.\d)", html, re.IGNORECASE)
                     if match: return float(match.group(1))
                     if "Critical" in html or "High" in html: return 9.0 
@@ -406,7 +400,6 @@ class IntelThread:
         today = str(date.today())
         if not isinstance(self.daily_stats, dict): self.daily_stats = {"date": today, "total": 0, "critical": 0, "items": []}
         if self.daily_stats.get("date") != today:
-            if not force_check: asyncio.create_task(self.send_daily_summary_report())
             self.daily_stats = {"date": today, "total": 0, "critical": 0, "items": []}
             self.save_json(self.daily_stats_file, self.daily_stats)
 
@@ -436,35 +429,22 @@ class IntelThread:
             await self.send_telegram_card("🤖 <b>GÜNLÜK KONTROL</b>\n✅ Sistem Aktif")
             self.last_heartbeat_date = today
 
-    async def send_monthly_executive_report(self, force=False):
-        today = date.today()
-        next_monday = today + timedelta(days=7)
-        is_last_monday = (today.weekday() == 0 and next_monday.month != today.month)
-        if not force:
-            if not is_last_monday: return
-            if str(today) == self.last_monthly_report_date: return
-        tr = pytz.timezone('Europe/Istanbul')
-        start = datetime(today.year, today.month, 1, tzinfo=tr).replace(tzinfo=None)
-        end = (start + timedelta(days=32)).replace(day=1) - timedelta(seconds=1)
-        await self.generate_custom_report(start, end)
-        self.last_monthly_report_date = str(today)
-
     # --- FORMATLAMA ---
     async def format_alert_technical(self, item, header_title="ACİL UYARI"):
         score = item.get('score', 0)
         source_name = item.get('source', '')
         
-        ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''), source_name, is_news=False)
+        ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''), source_name)
         
+        # Fallback
         if "Model" in ai_analiz_raw or "Pasif" in ai_analiz_raw:
-             ai_output = f"📦 **Sınıf:** Genel Zafiyet (AI Pasif)\n"
-             ai_output += f"🎯 **Hedef Sistem:** Analiz Edilemedi\n\n"
-             ai_output += ai_analiz_raw
+             ai_output = f"📦 **Sınıf:** Genel Zafiyet\n{ai_analiz_raw}"
         else:
              ai_output = ai_analiz_raw
         
         epss_str = await self.enrich_with_epss(item['id'])
         icon = "🛑" if score >= 9 else "🟠"
+        
         meta_info = f"🆔 <b>{item['id']}</b>\n📊 <b>CVSS:</b> {score} | <b>EPSS:</b> {epss_str}\n📂 <b>Kaynak:</b> {source_name}"
 
         return (
@@ -474,93 +454,68 @@ class IntelThread:
             f"{ai_output}\n"
         )
 
-    # --- ANA DÖNGÜ (SEMAPHORE İLE TRAFİK KONTROLÜ) ---
+    # --- ANA DÖNGÜ ---
     async def fetch_all(self):
-        # YENİ: Aynı anda sadece 2 istek at (Trafik polisi)
-        sem = asyncio.Semaphore(2) 
-        
-        async with aiohttp.ClientSession() as session:
-            tasks = []
-            for src in self.sources:
-                task = self.parse_generic_with_semaphore(sem, session, src, src["type"])
-                tasks.append(task)
-            
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
+            tasks = [self.parse_generic(s, src, src["type"]) for src in self.sources]
             results = await asyncio.gather(*tasks)
             return [i for sub in results for i in sub]
-
-    async def parse_generic_with_semaphore(self, sem, session, source, mode):
-        async with sem: # Sadece 2 işçi aynı anda çalışabilir
-            return await self.parse_generic(session, source, mode)
 
     async def parse_generic(self, session, source, mode):
         try:
             # Jitter
-            await asyncio.sleep(random.uniform(2.0, 5.0))
+            await asyncio.sleep(random.uniform(20.0, 50.0))
+            timeout = aiohttp.ClientTimeout(total=40)
             items = []
             
             if mode == "html_tenable":
                 content = await self.fetch_content_robust(source["url"], session)
-                if not content:
-                    self.failed_sources[source['name']] = "FetchErr"
-                    return []
-                if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
-                
-                html = content.decode('utf-8', errors='ignore')
-                soup = BeautifulSoup(html, 'lxml')
-                rows = soup.find_all('tr')
-                for row in rows:
-                    cols = row.find_all('td')
-                    if len(cols) >= 2:
-                        link_tag = row.find('a')
-                        if link_tag:
-                            title = link_tag.text.strip()
-                            link = "https://www.tenable.com" + link_tag['href']
-                            raw_id = link.split('/')[-1]
-                            items.append({"raw_id": raw_id, "title": title, "desc": "Tenable Plugin Update", "link": link, "score": 0.0})
+                if content:
+                    html = content.decode('utf-8', errors='ignore')
+                    soup = BeautifulSoup(html, 'lxml')
+                    rows = soup.find_all('tr')
+                    for row in rows:
+                        cols = row.find_all('td')
+                        if len(cols) >= 2:
+                            link_tag = row.find('a')
+                            if link_tag:
+                                title = link_tag.text.strip()
+                                link = "https://www.tenable.com" + link_tag['href']
+                                raw_id = link.split('/')[-1]
+                                items.append({"raw_id": raw_id, "title": title, "desc": "Tenable Plugin Update", "link": link, "score": 0.0}) 
 
             elif "json" in mode:
                 content = await self.fetch_content_robust(source["url"], session)
-                if not content:
-                    self.failed_sources[source['name']] = "FetchErr"
-                    return []
-                if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
-                
-                d = json.loads(content)
-                if mode == "json_cisa":
-                        items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in d.get("vulnerabilities", [])[:5]]
-                elif mode == "json_nist":
-                        for i in d.get("vulnerabilities", [])[:5]:
-                            cve = i.get("cve", {})
-                            items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST Kaydı", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": 7.5}) 
-                elif mode == "json_cveorg":
-                        items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in d.get("cve_ids", [])[:10]]
+                if content:
+                    d = json.loads(content)
+                    if mode == "json_cisa":
+                         items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in d.get("vulnerabilities", [])[:5]]
+                    elif mode == "json_nist":
+                         for i in d.get("vulnerabilities", [])[:5]:
+                             cve = i.get("cve", {})
+                             items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST Kaydı", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": 7.5}) 
+                    elif mode == "json_cveorg":
+                         items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
             
             elif mode == "feed":
                 content = await self.fetch_content_robust(source["url"], session)
-                if not content:
-                    self.failed_sources[source['name']] = "FetchErr"
-                    return []
-                if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
-                
-                content_str = content.decode('utf-8', errors='ignore')
-                f = feedparser.parse(content_str)
-                for e in f.entries[:5]:
-                    items.append({"raw_id": e.link, "title": e.title, "desc": e.get('summary',''), "link": e.link, "score": 0})
+                if content:
+                    f = feedparser.parse(content)
+                    for e in f.entries[:5]:
+                        items.append({"raw_id": e.link, "title": e.title, "desc": e.get('summary',''), "link": e.link, "score": 0})
             
             final = []
             for i in items:
                 i['score'] = self.extract_score(i)
                 # DEEP SCOUT
-                if i['score'] == 0.0 and i.get('link'):
+                if i['score'] == 0.0 and i.get('link') and source["name"] not in self.news_sources_list:
                     i['score'] = await self.enrich_score_from_web(i['link'], i['score'])
                 
                 i['id'] = self.normalize_id(i["raw_id"], i["link"], i["title"])
                 i['source'] = source['name']
                 final.append(i)
             return final
-        except Exception as e:
-            self.failed_sources[source['name']] = "EXC"
-            return []
+        except: return []
 
     async def process_intelligence(self):
         await self.check_commands()
@@ -569,13 +524,7 @@ class IntelThread:
         simdi = datetime.now(tr)
         self.last_scan_timestamp = simdi.strftime("%H:%M:%S")
         
-        if simdi.hour == 18 and self.last_news_report_date != str(date.today()):
-            await self.send_daily_news_digest()
-            
-        if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
-            await self.send_monthly_executive_report()
-
-        logger.info("🔎 Tarama Sürüyor (v23.0 Stealth Mode)...")
+        logger.info("🔎 Tarama Sürüyor (v24.0 Stealth)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -588,16 +537,17 @@ class IntelThread:
             
             notify = False
             is_upd = False
+            is_tenable = "Tenable" in src
             
             if prev is None:
                 self.known_ids[tid] = curr
                 self.update_daily_stats(threat)
                 self.log_to_monthly_json(threat) 
                 
-                # FİLTRE: 8.5+ veya Özel Kaynaklar
                 if curr >= 8.5: notify = True
                 elif threat['source']=="CISA KEV": notify = True
                 elif threat['source']=="ZeroDayInitiative": notify = True
+                elif is_tenable: notify = True
                 
                 if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
 
@@ -609,7 +559,7 @@ class IntelThread:
                     self.log_to_monthly_json(threat, old_score=prev)
             
             if notify:
-                header = "📈 SEVİYE YÜKSELDİ" if is_upd else "ACİL GÜVENLİK UYARISI"
+                header = "📈 SEVİYE YÜKSELDİ" if is_upd else "ACİL UYARI"
                 msg = await self.format_alert_technical(threat, header)
                 ref = self.extract_official_solution_link(threat.get('desc', ''))
                 search = threat['title'] if "http" in tid else tid
