@@ -7,7 +7,7 @@ import re
 import pytz
 import random
 import feedparser
-from bs4 import BeautifulSoup 
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 import google.generativeai as genai
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
@@ -15,7 +15,10 @@ from deep_translator import GoogleTranslator
 import urllib.parse
 import ssl 
 import certifi 
-from typing import List, Dict, Any, Union
+import warnings
+
+# XML Uyarılarını Sustur
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 # .env yükle
 load_dotenv()
@@ -25,8 +28,11 @@ logger = logging.getLogger("SecurityBot")
 # --- GLOBAL SSL FIX ---
 try:
     ssl_context = ssl.create_default_context(cafile=certifi.where())
+    # PacketStorm gibi sorunlu siteler için doğrulamayı gevşet
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
 except:
-    ssl_context = None 
+    ssl_context = ssl._create_unverified_context()
 
 class IntelThread:
     def __init__(self):
@@ -58,8 +64,7 @@ class IntelThread:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
+            "Connection": "keep-alive"
         }
         
         self.translator = GoogleTranslator(source='auto', target='tr')
@@ -70,7 +75,7 @@ class IntelThread:
         
         # --- 2. KAYNAKLAR ---
         self.sources = [
-            # TENABLE (Özel İlgi)
+            # TENABLE
             {"name": "Tenable Plugins (New)", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "html_tenable"},
             {"name": "Tenable Plugins (Upd)", "url": "https://www.tenable.com/plugins/feeds?sort=updated", "type": "html_tenable"},
             {"name": "Tenable Research", "url": "https://www.tenable.com/blog/feed", "type": "feed"},
@@ -104,7 +109,6 @@ class IntelThread:
         self.daily_stats_file = "daily_stats.json"
         self.news_buffer_file = "daily_news_buffer.json"
         
-        # GÜVENLİ YÜKLEME (DATA TYPE FIX)
         self.known_ids = self.load_json_safe(self.memory_file)
         self.daily_stats = self.load_json_safe(self.daily_stats_file)
         self.news_buffer = self.load_json_safe(self.news_buffer_file, is_list=True)
@@ -129,16 +133,15 @@ class IntelThread:
                     f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
                     f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description[:2000]}\n\n"
                     f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
-                    f"📦 **Sınıf:** [İşletim Sistemi | Web Uygulaması | Ağ/Güvenlik Cihazı | SCADA/ICS | Kütüphane/Yazılım]\n"
-                    f"🎯 **Hedef Sistem:** (Ürün adı)\n"
-                    f"⚡ **Teknik Özet:** (Kök neden?)\n"
-                    f"💀 **Risk:** (Saldırgan ne yapar?)\n"
-                    f"🛡️ **Aksiyon:** (Sürüm ver, emir kipi kullan)"
+                    f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Mobil | Veritabanı]\n"
+                    f"🎯 **Hedef:** (Etkilenen ürün ve versiyon)\n"
+                    f"💀 **Risk:** (RCE, DoS, SQLi vb. - Kısa özet)\n"
+                    f"🛡️ **Aksiyon:** (Hangi sürüme güncellenmeli veya ne yapılmalı? - Emir kipi)"
                 )
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, self.model.generate_content, prompt)
             return response.text.strip()
-        except: return self.translate_text(f"{title}\n{description}")[:200]
+        except: return self.translate_text(f"{title}\n{description}")[:300]
 
     # --- 4. CHATOPS ---
     async def check_commands(self):
@@ -165,19 +168,20 @@ class IntelThread:
             try: m_name = self.model.model_name
             except: m_name = "Gemini"
             ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
-            if self.failed_sources: health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
+            if self.failed_sources:
+                health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
             else: health_msg = "✅ Sağlıklı"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
                 f"📡 <b>Kaynaklar:</b> {health_msg}\n🧠 <b>AI:</b> {ai_status}\n"
-                f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
+                f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri işlendi."
             )
             await self.send_telegram_card(msg)
         elif cmd == "/debug":
-            if not self.failed_sources: await self.send_telegram_card("✅ Hata yok.")
+            if not self.failed_sources: await self.send_telegram_card("✅ Harika! Hata yok.")
             else:
                 errs = "\n".join([f"• {k}: {v}" for k,v in self.failed_sources.items()])
-                await self.send_telegram_card(f"🔧 <b>HATA DETAYI</b>\n{errs}")
+                await self.send_telegram_card(f"🔧 <b>HATA RAPORU</b>\n{errs}")
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
             dosya = datetime.now(tr).strftime("%m-%Y.json")
@@ -187,31 +191,6 @@ class IntelThread:
             else: await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
         elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başladı.")
         elif cmd == "/aylik": await self.send_monthly_executive_report(force=True)
-        elif cmd == "/analiz": await self.handle_analysis_request(cmd_parts)
-
-    async def handle_analysis_request(self, parts):
-        tr = pytz.timezone('Europe/Istanbul')
-        today = datetime.now(tr)
-        start_date = None
-        end_date = None
-        try:
-            if len(parts) == 1:
-                start_date = today.replace(day=1)
-                end_date = today
-            elif len(parts) == 2:
-                dt = datetime.strptime(parts[1], "%Y-%m")
-                start_date = dt
-                next_month = dt.replace(day=28) + timedelta(days=4)
-                end_date = next_month - timedelta(days=next_month.day)
-            elif len(parts) == 3:
-                start_date = datetime.strptime(parts[1], "%Y-%m-%d")
-                end_date = datetime.strptime(parts[2], "%Y-%m-%d")
-            
-            start_date = start_date.replace(hour=0, minute=0, second=0)
-            end_date = end_date.replace(hour=23, minute=59, second=59)
-            await self.send_telegram_card(f"📊 <b>Analiz Hazırlanıyor...</b>\n📅 {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}")
-            await self.generate_custom_report(start_date, end_date)
-        except ValueError: await self.send_telegram_card("⚠️ Hatalı Format! Örn: /analiz 2025-12-01 2025-12-10")
 
     # --- 5. LOGGING ---
     def log_to_monthly_json(self, item, old_score=None):
@@ -245,10 +224,8 @@ class IntelThread:
             else: curr = curr.replace(month=curr.month+1, day=1)
         
         filtered_data = []
-        found_files_count = 0
         for f_name in target_files:
             if os.path.exists(f_name):
-                found_files_count += 1
                 try:
                     with open(f_name, 'r') as f:
                         data = json.load(f)
@@ -259,16 +236,12 @@ class IntelThread:
                             except: pass
                 except: pass
 
-        if found_files_count == 0:
-            await self.send_telegram_card("⚠️ <b>Veri Dosyası Yok!</b>")
-            return
         if not filtered_data:
-            await self.send_telegram_card("⚠️ <b>Kayıt Bulunamadı!</b>")
+            await self.send_telegram_card("⚠️ <b>Veri Dosyası Yok veya Kayıt Bulunamadı!</b>")
             return
 
-        await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor...</b>")
+        await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor (AI Analizi)...</b>")
 
-        total = len(filtered_data)
         crit = sum(1 for i in filtered_data if i.get('score', 0) >= 9.0)
         high = sum(1 for i in filtered_data if 7.0 <= i.get('score', 0) < 9.0)
         escalated = sum(1 for i in filtered_data if i.get('status') == "ESCALATED")
@@ -277,7 +250,7 @@ class IntelThread:
         if self.model:
             top_risks = sorted(filtered_data, key=lambda x: x.get('score', 0), reverse=True)[:10]
             summary_text = "\n".join([f"- {i.get('title')} ({i.get('score')})" for i in top_risks])
-            prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {total}, Kritik: {crit}, Yükselen: {escalated}\n\nÖrnek Tehditler:\n{summary_text}"
+            prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {len(filtered_data)}, Kritik: {crit}, Yükselen: {escalated}\n\nÖrnek Tehditler:\n{summary_text}"
             try:
                 resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, prompt)
                 ai_comment = resp.text.strip()
@@ -287,7 +260,7 @@ class IntelThread:
             "type": "doughnut",
             "data": {
                 "labels": ["Kritik", "Yüksek", "Diğer", "Yükselen"],
-                "datasets": [{"data": [crit, high, total-(crit+high), escalated], "backgroundColor": ["#FF0000", "#FF8C00", "#36A2EB", "#9932CC"]}]
+                "datasets": [{"data": [crit, high, len(filtered_data)-(crit+high), escalated], "backgroundColor": ["#FF0000", "#FF8C00", "#36A2EB", "#9932CC"]}]
             },
             "options": {"title": {"display": True, "text": "RAPOR", "fontColor": "#fff"}, "legend": {"labels": {"fontColor": "#fff"}}}
         }
@@ -313,7 +286,6 @@ class IntelThread:
                         data.add_field('parse_mode', 'HTML')
                         await session.post(url, data=data)
         except Exception as e:
-            logger.error(f"Grafik hatası: {e}")
             await self.send_telegram_card(f"{caption}\n\n(⚠️ Grafik yüklenemedi)")
 
     async def send_telegram_card(self, message, link=None, search_query=None, extra_ref=None):
@@ -343,18 +315,10 @@ class IntelThread:
                 await s.post(url, data=data)
         except: pass
 
-    async def send_telegram_photo(self, photo_url, caption):
-        url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
-        payload = {"chat_id": self.tg_chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
-        try:
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as s:
-                await s.post(url, json=payload, headers=self.headers)
-        except: pass
-
     # --- 8. HABER BÜLTENİ ---
     async def send_daily_news_digest(self, force=False):
         today = str(date.today())
-        if self.last_news_report_date != today and not force: return
+        if self.last_news_report_date == today and not force: return
         if not self.news_buffer: return
         report = f"🗞️ <b>SİBER GÜVENLİKTEN HAVADİSLER</b>\n📅 <i>{today} | Gün Sonu</i>\n⎯⎯⎯⎯⎯⎯⎯\n\n"
         for news in self.news_buffer:
@@ -381,8 +345,7 @@ class IntelThread:
         return default
     
     def save_json(self, filepath, data):
-        try:
-            with open(filepath, 'w') as f: json.dump(data, f)
+        try: with open(filepath, 'w') as f: json.dump(data, f)
         except: pass
     
     def extract_official_solution_link(self, text):
@@ -420,11 +383,14 @@ class IntelThread:
                 async with session.get(url, headers=self.headers, timeout=10) as response:
                     if response.status == 200:
                         html = await response.text()
-                        # Regex ile CVSS veya Severity avı
-                        match = re.search(r"(?:CVSS|Base Score|Score).*?(\d{1,2}\.\d)", html, re.IGNORECASE)
+                        # HTML okuma hatası olmaması için lxml parser
+                        soup = BeautifulSoup(html, 'lxml')
+                        text = soup.get_text()
+                        
+                        match = re.search(r"(?:CVSS|Base Score|Score).*?(\d{1,2}\.\d)", text, re.IGNORECASE)
                         if match: return float(match.group(1))
-                        # Severity: Critical
-                        if "Critical" in html or "High" in html: return 9.0 
+                        
+                        if "Critical" in text or "High" in text: return 9.0 
             return 0.0
         except: return 0.0
     
@@ -496,7 +462,7 @@ class IntelThread:
 
         return (
             f"<b>{icon} {header_title}</b>\n"
-            f"⎯⎯⎯⎯⎯⎯⎯\n"
+            f"⎯⎯⎯⎯⎯⎯\n"
             f"{meta_info}\n\n"
             f"{ai_output}\n"
         )
@@ -509,18 +475,18 @@ class IntelThread:
             return [i for sub in results for i in sub]
 
     async def parse_generic(self, session, source, mode):
-        # HATA KORUMALI
         try:
             await asyncio.sleep(random.uniform(30.0, 60.0))
             timeout = aiohttp.ClientTimeout(total=40)
             items = []
             
-            # --- HTML PARSER (TENABLE) ---
             if mode == "html_tenable":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
-                    if r.status != 200: return []
+                    if r.status != 200: 
+                        self.failed_sources[source["name"]] = r.status
+                        return []
                     html = await r.text()
-                    soup = BeautifulSoup(html, 'html.parser')
+                    soup = BeautifulSoup(html, 'lxml')
                     rows = soup.find_all('tr')
                     for row in rows:
                         cols = row.find_all('td')
@@ -532,10 +498,11 @@ class IntelThread:
                                 raw_id = link.split('/')[-1]
                                 items.append({"raw_id": raw_id, "title": title, "desc": "Tenable Plugin Update", "link": link, "score": 0.0}) 
 
-            # --- JSON PARSER ---
             elif "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
-                    if r.status != 200: return []
+                    if r.status != 200:
+                        self.failed_sources[source["name"]] = r.status
+                        return []
                     d = await r.json()
                     
                     if mode == "json_cisa":
@@ -547,20 +514,25 @@ class IntelThread:
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
             
-            # --- FEED PARSER ---
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
-                    if r.status != 200: return []
+                    if r.status != 200:
+                        self.failed_sources[source["name"]] = r.status
+                        return []
                     content = await r.read()
-                    f = feedparser.parse(content)
+                    content_str = content.decode('utf-8', errors='ignore')
+                    f = feedparser.parse(content_str)
                     for e in f.entries[:5]:
                         items.append({"raw_id": e.link, "title": e.title, "desc": e.get('summary',''), "link": e.link, "score": 0})
+            
+            # Başarılı ise hata listesinden sil
+            if source["name"] in self.failed_sources: del self.failed_sources[source["name"]]
             
             final = []
             for i in items:
                 i['score'] = self.extract_score(i)
-                # İLK DERİN KONTROL (DEEP SCOUT)
-                if i['score'] == 0.0 and i['source'] not in self.news_sources_list and i.get('link'):
+                # DEEP SCOUT: Puan 0 ise linke gir (Haber kaynakları hariç)
+                if i['score'] == 0.0 and i.get('link') and source["name"] not in self.news_sources_list:
                     i['score'] = await self.enrich_score_from_web(i['link'], i['score'])
                 
                 i['id'] = self.normalize_id(i["raw_id"], i["link"], i["title"])
@@ -568,8 +540,8 @@ class IntelThread:
                 final.append(i)
             return final
         except Exception as e:
-            logger.error(f"Kaynak {source['name']} genel hata: {e}")
-            self.failed_sources[source['name']] = "EXC"
+            logger.error(f"Kaynak Hatası ({source['name']}): {e}")
+            self.failed_sources[source["name"]] = "EXC"
             return []
 
     async def process_intelligence(self):
@@ -585,7 +557,7 @@ class IntelThread:
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v20.2 Stabil - Tenable Fix)...")
+        logger.info("🔎 Tarama Sürüyor (v21.0 Stable)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -598,25 +570,8 @@ class IntelThread:
             is_news = src in self.news_sources_list
             notify = False
             is_upd = False
-            is_tenable = src.startswith("Tenable")
-
-            # --- TENAPLE GECİKMELİ KRİTİK KONTROLÜ (2. ŞANS) ---
-            # Eğer Tenable'dan geliyorsa ve daha önce 8.0'dan düşük bir skorla kaydedilmişse,
-            # (Farklı bir skor da olsa bu kontrolü yapıp tekrar zenginleştireceğiz)
-            if is_tenable and prev is not None and prev < 8.0 and curr < 8.0 and threat.get('link'):
-                new_score = await self.enrich_score_from_web(threat['link'], curr)
-                if new_score > curr and new_score >= 8.0:
-                    curr = new_score
-                    threat['score'] = curr
-                    # Bu bir eskalasyondur
-                    self.known_ids[tid] = curr
-                    self.log_to_monthly_json(threat, old_score=prev)
-                    is_upd = True
-                    notify = True
-            # --- TENAPLE KONTROL SONU ---
-
+            
             if prev is None:
-                # Yeni Kayıt
                 self.known_ids[tid] = curr
                 self.update_daily_stats(threat)
                 self.log_to_monthly_json(threat) 
@@ -626,35 +581,26 @@ class IntelThread:
                     self.news_buffer.append({"title": threat['title'], "link": threat['link'], "ai_summary": summ})
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
-                    # KURAL: Yüksek/Kritik (8.0+) VEYA CISA/ZDI/Asset
+                    # KURAL: Yüksek/Kritik (8.0+) VEYA CISA/ZDI
                     if curr >= 8.0: notify = True
                     elif threat['source']=="CISA KEV": notify = True
                     elif threat['source']=="ZeroDayInitiative": notify = True
                     
                     if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
 
-            elif not is_news and not is_upd:
-                # Normal Eskalasyon (Tenable gecikmesi harici)
-                if curr > prev and curr >= 8.0 and prev < 8.0:
+            elif not is_news:
+                if curr >= 8.0 and prev < 8.0:
                     is_upd = True
                     notify = True
                     self.known_ids[tid] = curr
                     self.log_to_monthly_json(threat, old_score=prev)
             
-            # Bildirim Gönderme
             if notify and not is_news:
                 header = "📈 SEVİYE YÜKSELDİ" if is_upd else "ACİL GÜVENLİK UYARISI"
-                # Tenable özel bildirimi
-                if is_tenable and is_upd:
-                    header = "🔥 TENABLE GECİKMELİ KRİTİK (KONTROL EDİLDİ)"
-                    
                 msg = await self.format_alert_technical(threat, header)
                 ref = self.extract_official_solution_link(threat.get('desc', ''))
                 search = threat['title'] if "http" in tid else tid
                 await self.send_telegram_card(msg, link=threat['link'], search_query=search, extra_ref=ref)
                 self.save_json(self.memory_file, self.known_ids)
-                
-            # Eğer Tenable 2. şans ile skorunu yükseltti ama bildirime girmediyse bile kaydet
-            elif prev is not None and self.known_ids.get(tid) != curr:
-                 self.known_ids[tid] = curr
-                 self.save_json(self.memory_file, self.known_ids)
+
+        self.save_json(self.memory_file, self.known_ids)
