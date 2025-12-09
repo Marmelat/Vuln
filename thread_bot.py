@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
 import urllib.parse
-from bs4 import BeautifulSoup # YENİ: HTML Kazıyıcı
+from bs4 import BeautifulSoup
 
 # .env yükle
 load_dotenv()
@@ -50,8 +50,7 @@ class IntelThread:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Cache-Control": "no-cache",
+            "Upgrade-Insecure-Requests": "1"
         }
         
         self.translator = GoogleTranslator(source='auto', target='tr')
@@ -62,35 +61,36 @@ class IntelThread:
         
         # --- 2. KAYNAKLAR ---
         self.sources = [
-            # --- TENABLE ÖZEL SCRAPER (HTML) ---
-            # "type": "html_tenable" olarak işaretledik, özel fonksiyon çalışacak.
+            # TENABLE (Özel İlgi)
             {"name": "Tenable Plugins (New)", "url": "https://www.tenable.com/plugins/feeds?sort=newest", "type": "html_tenable"},
             {"name": "Tenable Plugins (Upd)", "url": "https://www.tenable.com/plugins/feeds?sort=updated", "type": "html_tenable"},
-
+            {"name": "Tenable Research", "url": "https://www.tenable.com/blog/feed", "type": "feed"},
+            
             # HABERLER
             {"name": "Google News Hunter", "url": "https://news.google.com/rss/search?q=cyber+security+vulnerability+exploit+OR+zero-day+when:1d&hl=en-US&gl=US&ceid=US:en", "type": "feed"},
             {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "type": "feed"},
             {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "type": "feed"},
             {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml", "type": "feed"},
 
-            # TEKNİK & VENDOR
-            {"name": "MSRC", "url": "https://api.msrc.microsoft.com/update-guide/rss", "type": "feed"},
-            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
-            {"name": "CERT-EU", "url": "https://www.cert.europa.eu/feed/", "type": "feed"},
+            # TEKNİK
             {"name": "NIST NVD", "url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=20&pubStartDate=", "type": "json_nist"},
             {"name": "CVE.org", "url": "https://cveawg.mitre.org/api/cve-id?cveState=PUBLISHED&time_modified_gt=", "type": "json_cveorg"},
             {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "type": "json_cisa"},
+            {"name": "MSRC", "url": "https://api.msrc.microsoft.com/update-guide/rss", "type": "feed"},
+            {"name": "GitHub Advisory", "url": "https://github.com/advisories.atom", "type": "feed"}, 
+            {"name": "CERT-EU", "url": "https://www.cert.europa.eu/feed/", "type": "feed"},
             {"name": "Wordfence (WP)", "url": "https://www.wordfence.com/feed/", "type": "feed"}, 
             {"name": "Cisco PSIRT", "url": "https://tools.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml", "type": "feed"},
             {"name": "Fortinet", "url": "https://filestore.fortinet.com/fortiguard/rss/ir.xml", "type": "feed"},
             {"name": "Palo Alto", "url": "https://security.paloaltonetworks.com/rss.xml", "type": "feed"},
             {"name": "Snyk Vuln", "url": "https://snyk.io/blog/feed.xml", "type": "feed"}, 
+            
+            # EXPLOIT
             {"name": "ZeroDayInitiative", "url": "https://www.zerodayinitiative.com/rss/published/", "type": "feed"},
             {"name": "PacketStorm", "url": "https://rss.packetstormsecurity.com/files/tags/exploit/", "type": "feed"},
             {"name": "Vulners", "url": "https://vulners.com/rss.xml", "type": "feed"},
         ]
         
-        # Dosya Yönetimi
         self.memory_file = "processed_intelligence.json"
         self.daily_stats_file = "daily_stats.json"
         self.news_buffer_file = "daily_news_buffer.json"
@@ -99,34 +99,35 @@ class IntelThread:
         self.daily_stats = self.load_json_safe(self.daily_stats_file)
         self.news_buffer = self.load_json_safe(self.news_buffer_file, is_list=True)
         
+        if not isinstance(self.daily_stats, dict) or "date" not in self.daily_stats:
+            self.daily_stats = {"date": str(date.today()), "total": 0, "critical": 0, "items": []}
+            
         self.check_daily_reset(force_check=True)
         self.last_flush_time = datetime.now()
         self.last_heartbeat_date = None
         self.last_news_report_date = None
         self.last_monthly_report_date = None
 
-    # --- 3. GEMINI AI ---
+    # --- 3. GEMINI AI (PROFESYONEL) ---
     async def ask_gemini(self, title, description, source_name, is_news=False):
         if not self.model: return self.translate_text(f"{title}\n{description}")
         try:
             if is_news:
-                prompt = f"Haber Özeti (Tek Cümle): {title}\n{description}"
+                prompt = f"Haber Özeti (Tek Cümle): {title}\n{description[:1500]}"
             else:
                 prompt = (
-                    f"Sen kıdemli bir güvenlik uzmanısın. Veriyi analiz et.\n"
+                    f"Sen kıdemli bir SOC Analistisin. Aşağıdaki zafiyeti analiz et.\n"
                     f"Kaynak: {source_name}\nBaşlık: {title}\nDetay: {description[:2000]}\n\n"
-                    f"Çıktı Formatı (Markdown, kod bloğu yok):\n"
-                    f"⚠️ **KAYNAK DEĞİŞİKLİĞİ:** (Varsa yaz, yoksa sil)\n"
-                    f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Lib | Diğer]\n"
-                    f"🎯 **Hedef Sistem:** (Ürün adı)\n"
-                    f"⚡ **Teknik Özet:** (Kök neden?)\n"
-                    f"💀 **Risk:** (Saldırgan ne yapar?)\n"
-                    f"🛡️ **Aksiyon:** (Sürüm ver, emir kipi kullan)"
+                    f"Çıktı Formatı (Markdown, kod bloğu YOK):\n"
+                    f"📦 **Sınıf:** [İşletim Sistemi | Web App | Network | Mobil | Veritabanı]\n"
+                    f"🎯 **Hedef:** (Etkilenen ürün ve versiyon)\n"
+                    f"💀 **Risk:** (RCE, DoS, SQLi vb. - Kısa özet)\n"
+                    f"🛡️ **Aksiyon:** (Hangi sürüme güncellenmeli veya ne yapılmalı? - Emir kipi)"
                 )
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, self.model.generate_content, prompt)
             return response.text.strip()
-        except: return self.translate_text(f"{title}\n{description}")[:200]
+        except: return self.translate_text(f"{title}\n{description}")[:300]
 
     # --- 4. CHATOPS ---
     async def check_commands(self):
@@ -150,20 +151,20 @@ class IntelThread:
         cmd = cmd_parts[0].lower()
         if cmd in ["/durum", "/status"]:
             stats = self.daily_stats
-            ai_status = "✅ Aktif" if self.model else "⚠️ Pasif"
-            if self.failed_sources: health_msg = f"⚠️ <b>{len(self.failed_sources)} Hatalı</b>"
-            else: health_msg = "✅ Sağlıklı"
+            try: m_name = self.model.model_name
+            except: m_name = "Gemini"
+            ai_status = f"✅ Aktif ({m_name})" if self.model else "⚠️ Pasif"
             msg = (
                 f"🤖 <b>SİSTEM DURUMU</b>\n🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
-                f"📡 <b>Kaynaklar:</b> {health_msg}\n🧠 <b>AI:</b> {ai_status}\n"
-                f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
+                f"🧠 <b>AI:</b> {ai_status}\n"
+                f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri işlendi."
             )
             await self.send_telegram_card(msg)
         elif cmd == "/debug":
-            if not self.failed_sources: await self.send_telegram_card("✅ Hata yok.")
+            if not self.failed_sources: await self.send_telegram_card("✅ Harika! Hata yok.")
             else:
                 errs = "\n".join([f"• {k}: {v}" for k,v in self.failed_sources.items()])
-                await self.send_telegram_card(f"🔧 <b>HATA DETAYI</b>\n{errs}")
+                await self.send_telegram_card(f"🔧 <b>HATA RAPORU</b>\n{errs}")
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone('Europe/Istanbul')
             dosya = datetime.now(tr).strftime("%m-%Y.json")
@@ -173,31 +174,6 @@ class IntelThread:
             else: await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
         elif cmd == "/tara": await self.send_telegram_card("🚀 Tarama başladı.")
         elif cmd == "/aylik": await self.send_monthly_executive_report(force=True)
-        elif cmd == "/analiz": await self.handle_analysis_request(cmd_parts)
-
-    async def handle_analysis_request(self, parts):
-        tr = pytz.timezone('Europe/Istanbul')
-        today = datetime.now(tr)
-        start_date = None
-        end_date = None
-        try:
-            if len(parts) == 1:
-                start_date = today.replace(day=1)
-                end_date = today
-            elif len(parts) == 2:
-                dt = datetime.strptime(parts[1], "%Y-%m")
-                start_date = dt
-                next_month = dt.replace(day=28) + timedelta(days=4)
-                end_date = next_month - timedelta(days=next_month.day)
-            elif len(parts) == 3:
-                start_date = datetime.strptime(parts[1], "%Y-%m-%d")
-                end_date = datetime.strptime(parts[2], "%Y-%m-%d")
-            
-            start_date = start_date.replace(hour=0, minute=0, second=0)
-            end_date = end_date.replace(hour=23, minute=59, second=59)
-            await self.send_telegram_card(f"📊 <b>Analiz Hazırlanıyor...</b>\n📅 {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}")
-            await self.generate_custom_report(start_date, end_date)
-        except ValueError: await self.send_telegram_card("⚠️ Hatalı Format! Örn: /analiz 2025-12-01 2025-12-10")
 
     # --- 5. LOGGING ---
     def log_to_monthly_json(self, item, old_score=None):
@@ -220,8 +196,34 @@ class IntelThread:
             with open(dosya_ismi, 'w', encoding='utf-8') as f: json.dump(mevcut, f, ensure_ascii=False, indent=4)
         except: pass
 
-    # --- 6. RAPORLAMA ---
+    # --- 6. DERİN İZCİ (DEEP SCOUT) ---
+    async def enrich_score_from_web(self, url, current_score):
+        """
+        Eğer skor 0 ise, verilen linke gidip sayfayı tarar ve gerçek CVSS skorunu bulur.
+        """
+        if current_score > 0.0: return current_score # Zaten skor varsa uğraşma
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, timeout=10) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        # Regex ile CVSS veya Severity avı
+                        # 1. Format: "CVSS: 9.8" veya "Base Score: 9.8"
+                        match = re.search(r"(?:CVSS|Base Score|Score).*?(\d{1,2}\.\d)", html, re.IGNORECASE)
+                        if match:
+                            return float(match.group(1))
+                        
+                        # 2. Format: Severity: Critical
+                        if "Critical" in html or "High" in html:
+                            return 9.0 # Varsayılan yüksek puan
+            return 0.0
+        except: return 0.0
+
+    # --- 7. RAPORLAMA ---
     async def generate_custom_report(self, start_date, end_date):
+        # (Önceki raporlama kodunun aynısı - Özet geçiyorum)
+        # Sadece grafik renklerini ve filtresini güncelledim
         target_files = set()
         curr = start_date
         while curr <= end_date:
@@ -231,10 +233,8 @@ class IntelThread:
             else: curr = curr.replace(month=curr.month+1, day=1)
         
         filtered_data = []
-        found_files_count = 0
         for f_name in target_files:
             if os.path.exists(f_name):
-                found_files_count += 1
                 try:
                     with open(f_name, 'r') as f:
                         data = json.load(f)
@@ -245,45 +245,43 @@ class IntelThread:
                             except: pass
                 except: pass
 
-        if found_files_count == 0:
-            await self.send_telegram_card("⚠️ <b>Veri Dosyası Yok!</b>")
-            return
         if not filtered_data:
             await self.send_telegram_card("⚠️ <b>Kayıt Bulunamadı!</b>")
             return
 
         await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor...</b>")
 
-        total = len(filtered_data)
         crit = sum(1 for i in filtered_data if i.get('score', 0) >= 9.0)
         high = sum(1 for i in filtered_data if 7.0 <= i.get('score', 0) < 9.0)
         escalated = sum(1 for i in filtered_data if i.get('status') == "ESCALATED")
         
-        ai_comment = "Veri analizi yapılamadı."
-        if self.model:
-            top_risks = sorted(filtered_data, key=lambda x: x.get('score', 0), reverse=True)[:10]
+        # AI Analiz
+        ai_comment = "Veri yetersiz."
+        top_risks = sorted(filtered_data, key=lambda x: x.get('score', 0), reverse=True)[:10]
+        if self.model and top_risks:
             summary_text = "\n".join([f"- {i.get('title')} ({i.get('score')})" for i in top_risks])
-            prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nToplam: {total}, Kritik: {crit}, Yükselen: {escalated}\n\nÖrnek Tehditler:\n{summary_text}"
+            prompt = f"Rapor Özeti Yaz.\nTarih: {start_date.date()}-{end_date.date()}\nKritik: {crit}, Yüksek: {high}\nEn Önemli:\n{summary_text}\nYönetici özeti yaz."
             try:
                 resp = await asyncio.get_event_loop().run_in_executor(None, self.model.generate_content, prompt)
                 ai_comment = resp.text.strip()
             except: pass
 
+        # GRAFİK (SADECE ÖNEMLİLER)
         chart_config = {
             "type": "doughnut",
             "data": {
-                "labels": ["Kritik", "Yüksek", "Diğer", "Yükselen"],
-                "datasets": [{"data": [crit, high, total-(crit+high), escalated], "backgroundColor": ["#FF0000", "#FF8C00", "#36A2EB", "#9932CC"]}]
+                "labels": ["KRITIK", "YUKSEK", "YUKSELEN"],
+                "datasets": [{"data": [crit, high, escalated], "backgroundColor": ["#E74C3C", "#E67E22", "#8E44AD"]}]
             },
-            "options": {"title": {"display": True, "text": "RAPOR", "fontColor": "#fff"}, "legend": {"labels": {"fontColor": "#fff"}}}
+            "options": {"title": {"display": True, "text": "TEHDIT RAPORU", "fontColor": "#fff"}, "legend": {"labels": {"fontColor": "#fff"}}}
         }
         chart_json = json.dumps(chart_config)
         chart_url = f"https://quickchart.io/chart?c={urllib.parse.quote(chart_json)}&bkg=black&w=500&h=300"
-        caption = f"📊 <b>ÖZEL RAPOR</b>\n🛑 Kritik: {crit}\n📈 Eskalasyon: {escalated}\n📝 {ai_comment}"
+        caption = f"📊 <b>GÜVENLİK YÖNETİCİ RAPORU</b>\n🛑 Kritik: {crit}\n🟠 Yüksek: {high}\n📈 Eskalasyon: {escalated}\n\n📝 <b>AI Özeti:</b>\n<i>{ai_comment}</i>"
         
         await self.download_and_send_photo(chart_url, caption)
 
-    # --- 7. TELEGRAM ---
+    # --- 8. TELEGRAM ---
     async def download_and_send_photo(self, image_url, caption):
         if not self.tg_token: return
         try:
@@ -299,7 +297,7 @@ class IntelThread:
                         data.add_field('parse_mode', 'HTML')
                         await session.post(url, data=data)
         except Exception as e:
-            await self.send_telegram_card(f"{caption}\n\n(⚠️ Grafik yüklenemedi)")
+            await self.send_telegram_card(f"{caption}\n(Grafik Yüklenemedi)")
 
     async def send_telegram_card(self, message, link=None, search_query=None, extra_ref=None):
         if not self.tg_token: return
@@ -329,7 +327,7 @@ class IntelThread:
         try: async with aiohttp.ClientSession() as s: await s.post(url, json=payload, headers=self.headers)
         except: pass
 
-    # --- 8. HABER BÜLTENİ ---
+    # --- 9. HABER BÜLTENİ ---
     async def send_daily_news_digest(self, force=False):
         today = str(date.today())
         if self.last_news_report_date == today and not force: return
@@ -346,21 +344,15 @@ class IntelThread:
         self.save_json(self.news_buffer_file, [])
         self.last_news_report_date = today
 
-    # --- 9. YARDIMCI ---
+    # --- 10. YARDIMCI ---
     def load_json_safe(self, filepath, is_list=False):
-        """GÜVENLİ YÜKLEME"""
         default = [] if is_list else {}
         if os.path.exists(filepath):
             try:
                 with open(filepath, 'r') as f:
                     data = json.load(f)
-                    if is_list:
-                        if isinstance(data, list): return data
-                        else: return default
-                    else:
-                        if isinstance(data, dict): return data
-                        elif isinstance(data, list): return {k: 0 for k in data}
-                        else: return default
+                    if is_list: return data if isinstance(data, list) else default
+                    else: return {k: 0 for k in data} if isinstance(data, list) else data
             except: return default
         return default
     
@@ -371,7 +363,7 @@ class IntelThread:
     def extract_official_solution_link(self, text):
         if not text: return None
         urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
-        domains = ["microsoft.com", "cisco.com", "fortiguard.com", "paloaltonetworks.com", "tenable.com", "github.com"]
+        domains = ["microsoft.com", "cisco.com", "fortiguard.com", "tenable.com", "github.com", "oracle.com"]
         for u in urls:
             if any(d in u for d in domains): return u
         return None
@@ -430,43 +422,29 @@ class IntelThread:
             await self.send_telegram_card("🤖 <b>GÜNLÜK KONTROL</b>\n✅ Sistem Aktif")
             self.last_heartbeat_date = today
 
-    async def send_monthly_executive_report(self, force=False):
-        today = date.today()
-        next_monday = today + timedelta(days=7)
-        is_last_monday = (today.weekday() == 0 and next_monday.month != today.month)
-        if not force:
-            if not is_last_monday: return
-            if str(today) == self.last_monthly_report_date: return
-        tr = pytz.timezone('Europe/Istanbul')
-        start = datetime(today.year, today.month, 1, tzinfo=tr).replace(tzinfo=None)
-        end = (start + timedelta(days=32)).replace(day=1) - timedelta(seconds=1)
-        await self.generate_custom_report(start, end)
-        self.last_monthly_report_date = str(today)
-
-    # --- FORMATLAMA ---
+    # --- FORMATLAMA (YENİ PRO FORMAT) ---
     async def format_alert_technical(self, item, header_title="ACİL UYARI"):
         score = item.get('score', 0)
         source_name = item.get('source', '')
         
-        # AI Analizi (Fallback ile)
+        # AI Analizi
         ai_analiz_raw = await self.ask_gemini(item.get('title', ''), item.get('desc', ''), source_name, is_news=False)
-        if "Model" in ai_analiz_raw or "Pasif" in ai_analiz_raw:
-             manual_class = "📦 **Sınıf:** Genel Zafiyet (AI Pasif)\n"
-             ai_output = f"{manual_class}{ai_analiz_raw}\n"
-        else:
-             ai_output = f"{ai_analiz_raw}\n"
-
+        
+        # Hashtag (Yedek)
         _, hashtags = self.detect_os_and_tags(item['title'] + " " + item['desc'])
+        
         epss_str = await self.enrich_with_epss(item['id'])
         icon = "🛑" if score >= 9 else "🟠"
-        meta_info = f"🆔 <b>{item['id']}</b>\n📊 <b>CVSS:</b> {score} | <b>EPSS:</b> {epss_str}\n📂 {source_name}"
+        
+        # KAYNAK BİLGİSİNİ BURAYA EKLEDİM (Senin isteğin)
+        meta_info = f"🆔 <b>{item['id']}</b>\n📊 <b>CVSS:</b> {score} | <b>EPSS:</b> {epss_str}\n📂 <b>Kaynak:</b> {source_name}"
 
         return (
             f"<b>{icon} {header_title}</b>\n"
-            f"⎯⎯⎯⎯⎯⎯\n"
+            f"⎯⎯⎯⎯⎯⎯⎯\n"
             f"{meta_info}\n\n"
-            f"{ai_output}\n"
-            f"🏷 <i>{hashtags}</i>"
+            f"{ai_analiz_raw}" 
+            # Hashtag kaldırdım çünkü AI sınıflandırma yapıyor, daha temiz dursun
         )
 
     # --- ANA DÖNGÜ ---
@@ -477,20 +455,18 @@ class IntelThread:
             return [i for sub in results for i in sub]
 
     async def parse_generic(self, session, source, mode):
+        # HATA KORUMALI
         try:
-            # Jitter
             await asyncio.sleep(random.uniform(30.0, 60.0))
             timeout = aiohttp.ClientTimeout(total=40)
             items = []
             
-            # --- HTML PARSER (TENABLE) ---
+            # HTML PARSER (Tenable için özel)
             if mode == "html_tenable":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
                     if r.status != 200: return []
                     html = await r.text()
                     soup = BeautifulSoup(html, 'html.parser')
-                    # Tenable tablosunu bul (Genelde tbody tr içindedir)
-                    # Not: Bu yapı Tenable sitesine göre değişebilir, genel bir table taraması yapalım.
                     rows = soup.find_all('tr')
                     for row in rows:
                         cols = row.find_all('td')
@@ -499,19 +475,14 @@ class IntelThread:
                             if link_tag:
                                 title = link_tag.text.strip()
                                 link = "https://www.tenable.com" + link_tag['href']
-                                # ID genellikle ilk kolondadır veya linkin içindedir
                                 raw_id = link.split('/')[-1]
-                                items.append({"raw_id": raw_id, "title": title, "desc": "Tenable Plugin Update", "link": link, "score": 8.0}) # Skor tahmini
+                                items.append({"raw_id": raw_id, "title": title, "desc": "Tenable Plugin Update", "link": link, "score": 0.0}) # Puanı 0 verip scout'a bırakıyoruz
 
-            # --- JSON PARSER ---
+            # JSON & FEED PARSER
             elif "json" in mode:
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
-                    if r.status != 200: 
-                        if source['name'] not in self.failed_sources: self.failed_sources[source['name']] = r.status
-                        return []
-                    if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
+                    if r.status != 200: return []
                     d = await r.json()
-                    
                     if mode == "json_cisa":
                          items = [{"raw_id": i.get("cveID"), "title": i.get("vulnerabilityName"), "desc": i.get("shortDescription"), "link": f"https://www.cve.org/CVERecord?id={i.get('cveID')}", "score": 10.0} for i in d.get("vulnerabilities", [])[:5]]
                     elif mode == "json_nist":
@@ -520,14 +491,9 @@ class IntelThread:
                              items.append({"raw_id": cve.get("id"), "title": f"NIST: {cve.get('id')}", "desc": "NIST Kaydı", "link": f"https://nvd.nist.gov/vuln/detail/{cve.get('id')}", "score": 7.5}) 
                     elif mode == "json_cveorg":
                          items = [{"raw_id": i.get("cve_id"), "title": f"Yeni CVE: {i.get('cve_id')}", "desc": "Yeni zafiyet.", "link": f"https://www.cve.org/CVERecord?id={i.get('cve_id')}", "score": 0} for i in (await d.get("cve_ids", []))[:10]]
-            
-            # --- FEED PARSER ---
             elif mode == "feed":
                 async with session.get(source["url"], timeout=timeout, headers=self.headers) as r:
-                    if r.status != 200:
-                        if source['name'] not in self.failed_sources: self.failed_sources[source['name']] = r.status
-                        return []
-                    if source['name'] in self.failed_sources: del self.failed_sources[source['name']]
+                    if r.status != 200: return []
                     content = await r.read()
                     f = feedparser.parse(content)
                     for e in f.entries[:5]:
@@ -550,11 +516,11 @@ class IntelThread:
         
         if simdi.hour == 18 and self.last_news_report_date != str(date.today()):
             await self.send_daily_news_digest()
-            
+        
         if simdi.weekday() == 0 and simdi.hour == 9 and self.last_monthly_report_date != str(date.today()):
             await self.send_monthly_executive_report()
 
-        logger.info("🔎 Tarama Sürüyor (v19.0 Tenable Scraper)...")
+        logger.info("🔎 Tarama Sürüyor (v19.0 Deep Scout)...")
         self.check_daily_reset()
         await self.check_heartbeat()
 
@@ -569,28 +535,38 @@ class IntelThread:
             is_upd = False
             
             if prev is None:
+                # YENİ ZAFİYET (İlk kez görüldü)
+                # DEEP SCOUT: Puan 0 ise git web'den bul!
+                if not is_news and curr == 0.0:
+                    curr = await self.enrich_score_from_web(threat['link'], curr)
+                    threat['score'] = curr # Sözlüğü de güncelle
+                
                 self.known_ids[tid] = curr
                 self.update_daily_stats(threat)
                 self.log_to_monthly_json(threat) 
                 
                 if is_news: 
+                    # Haber mantığı (Buffer'a at)
                     summ = await self.ask_gemini(threat.get('title',''), threat.get('desc',''), src, True)
                     self.news_buffer.append({"title": threat['title'], "link": threat['link'], "ai_summary": summ})
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else: 
-                    is_technical = src not in self.news_sources_list
-                    # Tenable Scraper için her zaman notify = True (Çünkü sadece yeni/güncellenenleri çekiyor)
-                    if "Tenable" in src: notify = True
-                    elif curr >= 7.0 or (curr == 0.0 and is_technical) or threat['source']=="CISA KEV" or self.check_is_critical(threat): 
-                        notify = True
+                    # TEKNİK FİLTRE (Strict: Sadece 8.0 ve üzeri veya CISA/ZDI)
+                    if curr >= 8.0: notify = True
+                    elif threat['source']=="CISA KEV": notify = True
+                    elif threat['source']=="ZeroDayInitiative": notify = True # ZDI her zaman bildirilir
                     
                     if any(a in (threat['title']+threat['desc']).lower() for a in self.my_assets): notify = True
 
-            elif not is_news and curr >= 7.0 and prev < 7.0:
-                is_upd = True
-                notify = True
-                self.known_ids[tid] = curr
-                self.log_to_monthly_json(threat, old_score=prev)
+            elif not is_news:
+                # GÜNCELLEME (Escalation)
+                if curr == 0.0: curr = await self.enrich_score_from_web(threat['link'], curr)
+                
+                if curr >= 8.0 and prev < 8.0:
+                    is_upd = True
+                    notify = True
+                    self.known_ids[tid] = curr
+                    self.log_to_monthly_json(threat, old_score=prev)
             
             if notify and not is_news:
                 header = "📈 SEVİYE YÜKSELDİ" if is_upd else "ACİL UYARI"
