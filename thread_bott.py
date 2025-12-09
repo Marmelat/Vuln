@@ -207,10 +207,12 @@ class IntelThread:
         self.memory_file = "processed_intelligence.json"
         self.daily_stats_file = "daily_stats.json"
         self.news_buffer_file = "daily_news_buffer.json"
+        self.notified_ids_file = "notified_ids.json"
 
         self.known_ids = self.load_json_safe(self.memory_file)
         self.daily_stats = self.load_json_safe(self.daily_stats_file)
         self.news_buffer = self.load_json_safe(self.news_buffer_file, is_list=True)
+        self.notified_ids = set(self.load_json_safe(self.notified_ids_file, is_list=True))
 
         if not isinstance(self.daily_stats, dict) or "date" not in self.daily_stats:
             self.daily_stats = {
@@ -318,18 +320,31 @@ class IntelThread:
                 f"🕒 <b>Son Tarama:</b> {self.last_scan_timestamp}\n"
                 f"📡 <b>Kaynaklar:</b> {health_msg}\n"
                 f"🧠 <b>AI:</b> {ai_status}\n"
-                f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri."
+                f"📊 <b>Bugün:</b> {stats.get('total', 0)} veri, "
+                f"{stats.get('critical', 0)} kritik."
             )
             await self.send_telegram_card(msg)
 
         elif cmd == "/debug":
+            # Daha detaylı debug: başarısız kaynaklar + toplam known id sayısı
             if not self.failed_sources:
-                await self.send_telegram_card("✅ Harika! Hata yok.")
+                msg = (
+                    "✅ <b>Hata Yok</b>\n"
+                    f"📚 Bilinen ID sayısı: {len(self.known_ids)}\n"
+                    f"📨 Bildirim Gönderilen ID sayısı: {len(self.notified_ids)}"
+                )
+                await self.send_telegram_card(msg)
             else:
                 errs = "\n".join(
                     [f"• {k}: {v}" for k, v in self.failed_sources.items()]
                 )
-                await self.send_telegram_card(f"🔧 <b>HATA RAPORU</b>\n{errs}")
+                msg = (
+                    "🔧 <b>HATA RAPORU</b>\n"
+                    f"{errs}\n\n"
+                    f"📚 Bilinen ID sayısı: {len(self.known_ids)}\n"
+                    f"📨 Bildirim Gönderilen ID sayısı: {len(self.notified_ids)}"
+                )
+                await self.send_telegram_card(msg)
 
         elif cmd in ["/indir", "/rapor"]:
             tr = pytz.timezone("Europe/Istanbul")
@@ -341,10 +356,10 @@ class IntelThread:
                 await self.send_telegram_card(f"⚠️ Dosya yok: {dosya}")
 
         elif cmd == "/tara":
-            await self.send_telegram_card("🚀 Tarama başladı.")
+            await self.send_telegram_card("🚀 Tarama başladı (bir sonraki periyodik döngüde çalışacak).")
 
         elif cmd == "/aylik":
-            # Kendi kodunda tanımlı olduğunu varsayıyorum
+            await self.send_telegram_card("📊 Aylık yönetici raporu hazırlanıyor...")
             await self.send_monthly_executive_report(force=True)
 
     # --- 5. LOGGING ---
@@ -374,7 +389,7 @@ class IntelThread:
             pass
 
     # --- 6. RAPORLAMA ---
-    async def generate_custom_report(self, start_date, end_date):
+    async def generate_custom_report(self, start_date: datetime, end_date: datetime):
         target_files = set()
         curr = start_date
         while curr <= end_date:
@@ -407,8 +422,6 @@ class IntelThread:
             await self.send_telegram_card("⚠️ <b>Veri Dosyası Yok!</b>")
             return
 
-        await self.send_telegram_card("⏳ <b>Rapor hazırlanıyor...</b>")
-
         crit = sum(1 for i in filtered_data if i.get("score", 0) >= 8.5)
         high = sum(
             1 for i in filtered_data if 7.0 <= i.get("score", 0) < 8.5
@@ -424,7 +437,7 @@ class IntelThread:
                 [f"- {i.get('title')} ({i.get('score')})" for i in top_risks]
             )
             prompt = (
-                "Write an executive summary in English.\n"
+                "Write an executive summary in English for a monthly security report.\n"
                 f"Date Range: {start_date.date()} - {end_date.date()}\n"
                 f"Critical: {crit}, High: {high}\n"
                 f"Top Items:\n{summary_text}\n"
@@ -433,7 +446,6 @@ class IntelThread:
                 resp = await asyncio.get_event_loop().run_in_executor(
                     None, self.model.generate_content, prompt
                 )
-                # Sunumda TR istersen buraya da translate ekleyebilirsin
                 ai_comment = self.translate_text(resp.text.strip())
             except Exception:
                 pass
@@ -450,7 +462,7 @@ class IntelThread:
                 ],
             },
             "options": {
-                "title": {"display": True, "text": "RAPOR", "fontColor": "#fff"},
+                "title": {"display": True, "text": "AYLIK RAPOR", "fontColor": "#fff"},
                 "legend": {"labels": {"fontColor": "#fff"}},
             },
         }
@@ -460,13 +472,35 @@ class IntelThread:
             f"{urllib.parse.quote(chart_json)}&bkg=black&w=500&h=300"
         )
         caption = (
-            "📊 <b>ÖZEL RAPOR</b>\n"
+            "📊 <b>Aylık Yönetici Özeti</b>\n"
             f"🛑 Kritik: {crit}\n"
+            f"⚠️ Yüksek: {high}\n"
             f"📈 Eskalasyon: {escalated}\n"
             f"📝 {ai_comment}"
         )
 
         await self.download_and_send_photo(chart_url, caption)
+
+    async def send_monthly_executive_report(self, force: bool = False):
+        tr = pytz.timezone("Europe/Istanbul")
+        now = datetime.now(tr)
+        today_str = str(now.date())
+        if self.last_monthly_report_date == today_str and not force:
+            return
+
+        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_date = now
+        await self.generate_custom_report(start_date, end_date)
+        self.last_monthly_report_date = today_str
+
+    async def send_daily_summary_report(self):
+        stats = self.daily_stats
+        msg = (
+            "📅 <b>Gün Sonu Özeti</b>\n"
+            f"📊 Toplam olay: {stats.get('total', 0)}\n"
+            f"🛑 Kritik: {stats.get('critical', 0)}"
+        )
+        await self.send_telegram_card(msg)
 
     # --- 7. TELEGRAM ---
     async def download_and_send_photo(self, image_url, caption):
@@ -577,7 +611,6 @@ class IntelThread:
             "⎯⎯⎯⎯⎯⎯⎯\n\n"
         )
         for news in self.news_buffer:
-            # news['ai_summary'] backend EN; burada TR'ye çevirebiliriz
             summary_tr = self.translate_text(news["ai_summary"])
             entry = (
                 f"🔹 <a href='{news['link']}'>{news['title']}</a>\n"
@@ -897,6 +930,10 @@ class IntelThread:
                     for e in f.entries[:20]:
                         link = e.link
                         raw_id = link.split("/")[-1]
+                        pub_ts = None
+                        if hasattr(e, "published_parsed") and e.published_parsed:
+                            pub_dt = datetime(*e.published_parsed[:6])
+                            pub_ts = pub_dt.isoformat()
                         items.append(
                             {
                                 "raw_id": raw_id,
@@ -904,6 +941,7 @@ class IntelThread:
                                 "desc": getattr(e, "summary", ""),
                                 "link": link,
                                 "score": 0.0,
+                                "pub_ts": pub_ts,
                             }
                         )
 
@@ -1063,6 +1101,8 @@ class IntelThread:
         await self.check_heartbeat()
 
         all_threats = await self.fetch_all()
+        now_utc = datetime.utcnow()
+
         for threat in all_threats:
             tid = threat["id"]
             curr = threat.get("score", 0)
@@ -1071,6 +1111,17 @@ class IntelThread:
             is_news = src in self.news_sources_list
             notify = False
             is_upd = False
+
+            # 24 SAAT İÇİNDE GÜNCELLENEN TENABLE CRITICAL'LERİ ZORLA KONTROL ET
+            if "Tenable" in src and curr >= 8.5 and tid not in self.notified_ids:
+                pub_ts = threat.get("pub_ts")
+                if pub_ts:
+                    try:
+                        pub_dt = datetime.fromisoformat(pub_ts)
+                        if (now_utc - pub_dt) <= timedelta(hours=24):
+                            notify = True
+                    except Exception:
+                        pass
 
             # YENİ KAYIT
             if prev is None:
@@ -1095,25 +1146,25 @@ class IntelThread:
                     self.save_json(self.news_buffer_file, self.news_buffer)
                 else:
                     if curr >= 8.5:
-                        notify = True
+                        notify = True or notify  # zaten True ise bozulmasın
                     elif threat["source"] == "CISA KEV":
-                        notify = True
+                        notify = True or notify
                     elif threat["source"] == "ZeroDayInitiative":
-                        notify = True
+                        notify = True or notify
                     elif "Tenable" in threat["source"] and curr >= 7.0:
-                        notify = True
+                        notify = True or notify
 
                     if any(
                         a in (threat["title"] + threat["desc"]).lower()
                         for a in self.my_assets
                     ):
-                        notify = True
+                        notify = True or notify
 
             # VAR OLAN KAYIT (NEWS DEĞİL)
             elif not is_news:
                 if curr >= 8.5 and prev < 8.5:
                     is_upd = True
-                    notify = True
+                    notify = True or notify
                     self.known_ids[tid] = curr
                     self.log_to_monthly_json(threat, old_score=prev)
 
@@ -1131,6 +1182,10 @@ class IntelThread:
                 await self.send_telegram_card(
                     msg, link=threat["link"], search_query=search, extra_ref=ref
                 )
+
+                self.notified_ids.add(tid)
+                self.save_json(self.notified_ids_file, list(self.notified_ids))
                 self.save_json(self.memory_file, self.known_ids)
 
         self.save_json(self.memory_file, self.known_ids)
+        self.save_json(self.notified_ids_file, list(self.notified_ids))
