@@ -577,7 +577,7 @@ class IntelThread:
             "⎯⎯⎯⎯⎯⎯⎯\n\n"
         )
         for news in self.news_buffer:
-            # news['ai_summary'] backend EN; burada TR'ye çevirebilirsin istersen
+            # news['ai_summary'] backend EN; burada TR'ye çevirebiliriz
             summary_tr = self.translate_text(news["ai_summary"])
             entry = (
                 f"🔹 <a href='{news['link']}'>{news['title']}</a>\n"
@@ -645,14 +645,32 @@ class IntelThread:
         return r[:40]
 
     def extract_score(self, item):
-        txt = (item.get("title", "") + item.get("desc", "")).lower()
-        if m := re.search(
-            r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", txt
-        ):
+        """
+        Başlık + açıklama içinden skor çıkar.
+        1) CVSS/score sayısı varsa onu kullan
+        2) Yoksa 'Critical Severity / High Severity / Medium Severity' gibi
+           Tenable / RSS kelimelerinden yaklaşık skor üret
+        """
+        txt = (item.get("title", "") + " " + item.get("desc", "")).lower()
+
+        # 1) Sayısal CVSS / score var mı?
+        m = re.search(r"(?:cvss|score)[\s:]*([0-9]{1,2}\.?[0-9]?)", txt)
+        if m:
             try:
                 return float(m.group(1))
             except ValueError:
-                return 0.0
+                pass
+
+        # 2) Severity kelimelerinden tahmini skor üret (özellikle Tenable RSS için)
+        if "critical severity" in txt or "severity: critical" in txt:
+            return 9.8
+        if "high severity" in txt or "severity: high" in txt:
+            return 8.0
+        if "medium severity" in txt or "severity: medium" in txt:
+            return 6.0
+        if "low severity" in txt or "severity: low" in txt:
+            return 3.0
+
         return 0.0
 
     async def enrich_with_epss(self, cve):
@@ -1015,6 +1033,7 @@ class IntelThread:
                 i["source"] = source["name"]
                 final.append(i)
 
+            logger.info(f"[{source['name']}] parsed items: {len(final)}")
             return final
 
         except Exception as e:
